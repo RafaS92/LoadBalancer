@@ -21,7 +21,7 @@ HOP_BY_HOP_HEADERS = {
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
-    """Forward GET requests to backends selected by a shared pool."""
+    """Forward supported HTTP requests to backends selected by a shared pool."""
 
     protocol_version = "HTTP/1.1"
     pool: RoundRobinPool
@@ -30,13 +30,37 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Forward one GET request or return a controlled gateway error."""
 
+        self._proxy_request("GET")
+
+    def do_POST(self) -> None:
+        """Read and forward one POST request body."""
+
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._send_body(400, b"Invalid Content-Length header\n")
+            return
+
+        if content_length < 0:
+            self._send_body(400, b"Invalid Content-Length header\n")
+            return
+
+        body = self.rfile.read(content_length)
+        self._proxy_request("POST", body)
+
+    def _proxy_request(self, method: str, body: bytes | None = None) -> None:
+        """Select a backend and relay one supported HTTP request."""
+
         backend = self.pool.choose()
         if backend is None:
             self._send_body(503, b"No healthy backends available\n")
             return
 
         try:
-            status, reason, headers, body = self._forward_get(backend)
+            status, reason, headers, response_body = self._forward(
+                method, backend, body
+            )
         except (OSError, http.client.HTTPException):
             self._send_body(502, b"Selected backend could not be reached\n")
             return
@@ -46,14 +70,14 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             lowered = name.lower()
             if lowered not in HOP_BY_HOP_HEADERS and lowered != "content-length":
                 self.send_header(name, value)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(response_body)))
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(response_body)
 
-    def _forward_get(
-        self, backend: Backend
+    def _forward(
+        self, method: str, backend: Backend, body: bytes | None
     ) -> tuple[int, str, list[tuple[str, str]], bytes]:
-        """Send the current path and headers to one backend."""
+        """Send the current request to one backend."""
 
         target = urlsplit(backend.url)
         if target.scheme != "http" or target.hostname is None:
@@ -67,12 +91,13 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         headers = {
             name: value
             for name, value in self.headers.items()
-            if name.lower() not in HOP_BY_HOP_HEADERS and name.lower() != "host"
+            if name.lower() not in HOP_BY_HOP_HEADERS
+            and name.lower() not in {"host", "content-length"}
         }
         headers["Host"] = target.netloc
 
         try:
-            connection.request("GET", self.path, headers=headers)
+            connection.request(method, self.path, body=body, headers=headers)
             response = connection.getresponse()
             body = response.read()
             return response.status, response.reason, response.getheaders(), body

@@ -103,13 +103,13 @@ a runnable checkpoint before the next step begins.
 
 ## Current checkpoint
 
-The application now accepts HTTP `GET` requests on `127.0.0.1:8080`, selects a
-healthy backend with the thread-safe round-robin pool, and forwards the path and
-query string to demonstration backends on ports 9001 through 9003. It preserves
-the backend status, end-to-end headers, and body, returns `503` when the pool is
-exhausted, and returns `502` when a selected backend cannot be reached.
+The application now accepts HTTP `GET` and `POST` requests on `127.0.0.1:8080`,
+selects a healthy backend with the thread-safe round-robin pool, and forwards
+the path, query string, headers, and `POST` body to demonstration backends on
+ports 9001 through 9003. It preserves the backend status, end-to-end headers,
+and response body, returns `503` when the pool is exhausted, and returns `502`
+when a selected backend cannot be reached.
 
-This checkpoint intentionally supports only `GET` and buffers each response in
-memory. The next checkpoint will add request-body forwarding for methods such as
-`POST` while keeping retry behavior out of scope until its safety rules are
-explicit.
+This checkpoint still buffers request and response bodies in memory and does
+not retry requests. The next checkpoint will move the hardcoded listen and
+backend addresses into explicit runtime configuration.

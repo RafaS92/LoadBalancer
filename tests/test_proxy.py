@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Iterator
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from load_balancer.proxy import create_proxy_server
 from load_balancer.routing import Backend, RoundRobinPool
@@ -29,6 +29,23 @@ def backend_server(name: str) -> ThreadingHTTPServer:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("X-Backend", name)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            request_body = self.rfile.read(content_length)
+            body = json.dumps(
+                {
+                    "backend": name,
+                    "path": self.path,
+                    "content_type": self.headers.get("Content-Type"),
+                    "body": request_body.decode(),
+                }
+            ).encode()
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -85,6 +102,30 @@ def test_routes_successive_requests_round_robin() -> None:
                 selected.append(json.load(response)["backend"])
 
     assert selected == ["backend-a", "backend-b", "backend-a", "backend-b"]
+
+
+def test_forwards_post_body_and_content_type() -> None:
+    upstream = backend_server("backend-a")
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    request = Request(
+        f"{proxy_url(proxy)}/orders",
+        data=b'{"item":"book"}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(request) as response:
+            payload = json.load(response)
+
+            assert response.status == 201
+            assert payload == {
+                "backend": "backend-a",
+                "path": "/orders",
+                "content_type": "application/json",
+                "body": '{"item":"book"}',
+            }
 
 
 def test_returns_503_when_no_backend_is_healthy() -> None:
