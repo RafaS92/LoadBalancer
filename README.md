@@ -137,6 +137,11 @@ traffic listener, so it should not be exposed publicly. This checkpoint still
 performs probes sequentially and buffers request and response bodies in memory.
 Each completed proxy request writes one JSON log event containing its method,
 path, selected backend, status, outcome, and duration. Request headers and
-bodies are intentionally excluded to avoid leaking sensitive data. The next
-checkpoint will add basic counters and latency metrics derived from the same
-request outcomes.
+bodies are intentionally excluded to avoid leaking sensitive data.
+
+Prometheus counters and latency histograms derived from the same completed
+request events are available from `GET /metrics`. The official Prometheus client
+provides thread-safe metric updates and the standard exposition format. Like the
+administration endpoint, metrics currently share the traffic listener and
+should not be exposed publicly. The next checkpoint will track active requests
+per backend as the foundation for least-connections routing.

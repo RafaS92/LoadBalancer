@@ -171,9 +171,37 @@ def test_admin_endpoint_rejects_post() -> None:
             urlopen(request)
         except HTTPError as error:
             assert error.code == 405
-            assert error.read() == b"Administration endpoint is read-only\n"
+            assert error.read() == b"Internal endpoint is read-only\n"
         else:
             raise AssertionError("expected the administration endpoint to reject POST")
+
+
+def test_metrics_endpoint_exposes_request_count_and_latency() -> None:
+    upstream = backend_server("backend-a")
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(f"{proxy_url(proxy)}/items"):
+            pass
+        with urlopen(f"{proxy_url(proxy)}/metrics") as response:
+            metrics = response.read().decode()
+
+            assert response.status == 200
+            assert response.headers.get_content_type() == "text/plain"
+
+    request_lines = [
+        line
+        for line in metrics.splitlines()
+        if line.startswith("load_balancer_proxy_requests_total{")
+    ]
+    assert len(request_lines) == 1
+    assert 'backend="backend-a"' in request_lines[0]
+    assert 'method="GET"' in request_lines[0]
+    assert 'outcome="completed"' in request_lines[0]
+    assert 'status="200"' in request_lines[0]
+    assert request_lines[0].endswith(" 1.0")
+    assert "load_balancer_proxy_request_duration_seconds_count" in metrics
 
 
 def test_forwards_post_body_and_content_type() -> None:

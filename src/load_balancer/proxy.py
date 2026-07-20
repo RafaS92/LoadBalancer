@@ -9,6 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import perf_counter
 from urllib.parse import urlsplit
 
+from prometheus_client import CONTENT_TYPE_LATEST
+
+from load_balancer.metrics import ProxyMetrics
 from load_balancer.routing import Backend, RoundRobinPool
 
 HOP_BY_HOP_HEADERS = {
@@ -22,6 +25,7 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 ADMIN_BACKENDS_PATH = "/admin/backends"
+METRICS_PATH = "/metrics"
 REQUEST_LOGGER = logging.getLogger("load_balancer.requests")
 
 
@@ -30,6 +34,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     pool: RoundRobinPool
+    metrics: ProxyMetrics
     upstream_timeout = 2.0
 
     def do_GET(self) -> None:
@@ -38,13 +43,20 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == ADMIN_BACKENDS_PATH:
             self._send_backend_snapshot()
             return
+        if urlsplit(self.path).path == METRICS_PATH:
+            self._send_body(
+                200,
+                self.metrics.render(),
+                content_type=CONTENT_TYPE_LATEST,
+            )
+            return
         self._proxy_request("GET")
 
     def do_POST(self) -> None:
         """Read and forward one POST request body."""
 
-        if urlsplit(self.path).path == ADMIN_BACKENDS_PATH:
-            self._send_body(405, b"Administration endpoint is read-only\n")
+        if urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}:
+            self._send_body(405, b"Internal endpoint is read-only\n")
             return
 
         raw_length = self.headers.get("Content-Length", "0")
@@ -68,7 +80,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         backend = self.pool.choose()
         if backend is None:
             self._send_body(503, b"No healthy backends available\n")
-            self._log_request(method, 503, None, "no_healthy_backend", started_at)
+            self._record_completion(
+                method, 503, None, "no_healthy_backend", started_at
+            )
             return
 
         try:
@@ -77,7 +91,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             )
         except (OSError, http.client.HTTPException):
             self._send_body(502, b"Selected backend could not be reached\n")
-            self._log_request(
+            self._record_completion(
                 method,
                 502,
                 backend,
@@ -94,7 +108,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(response_body)))
         self.end_headers()
         self.wfile.write(response_body)
-        self._log_request(method, status, backend, "completed", started_at)
+        self._record_completion(method, status, backend, "completed", started_at)
 
     def _forward(
         self, method: str, backend: Backend, body: bytes | None
@@ -156,7 +170,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _log_request(
+    def _record_completion(
         self,
         method: str,
         status: int,
@@ -164,8 +178,17 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         outcome: str,
         started_at: float,
     ) -> None:
-        """Write one structured event for a completed proxy request."""
+        """Record metrics and write one log for a completed proxy request."""
 
+        duration_seconds = perf_counter() - started_at
+        backend_name = backend.name if backend is not None else None
+        self.metrics.record(
+            method=method,
+            status=status,
+            outcome=outcome,
+            backend=backend_name,
+            duration_seconds=duration_seconds,
+        )
         REQUEST_LOGGER.info(
             json.dumps(
                 {
@@ -173,9 +196,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     "method": method,
                     "path": self.path,
                     "status": status,
-                    "backend": backend.name if backend is not None else None,
+                    "backend": backend_name,
                     "outcome": outcome,
-                    "duration_ms": round((perf_counter() - started_at) * 1000, 3),
+                    "duration_ms": round(duration_seconds * 1000, 3),
                 },
                 separators=(",", ":"),
             )
@@ -190,12 +213,17 @@ def create_proxy_server(
     pool: RoundRobinPool,
     *,
     upstream_timeout: float = 2.0,
+    metrics: ProxyMetrics | None = None,
 ) -> ThreadingHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
 
     handler_class = type(
         "ConfiguredProxyRequestHandler",
         (ProxyRequestHandler,),
-        {"pool": pool, "upstream_timeout": upstream_timeout},
+        {
+            "pool": pool,
+            "metrics": metrics or ProxyMetrics(),
+            "upstream_timeout": upstream_timeout,
+        },
     )
     return ThreadingHTTPServer(address, handler_class)
