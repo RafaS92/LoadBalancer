@@ -1,10 +1,13 @@
 import json
+import logging
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Iterator
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+import pytest
 
 from load_balancer.proxy import create_proxy_server
 from load_balancer.routing import Backend, RoundRobinPool
@@ -66,18 +69,36 @@ def proxy_url(server: ThreadingHTTPServer) -> str:
     return f"http://{host}:{port}"
 
 
-def test_forwards_path_and_query_and_preserves_response() -> None:
+def test_forwards_path_and_query_and_preserves_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     upstream = backend_server("backend-a")
     pool = RoundRobinPool([backend_for(upstream, "backend-a")])
     proxy = create_proxy_server(("127.0.0.1", 0), pool)
 
-    with running_server(upstream), running_server(proxy):
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(upstream),
+        running_server(proxy),
+    ):
         with urlopen(f"{proxy_url(proxy)}/items?limit=5") as response:
             payload = json.load(response)
 
             assert response.status == 200
             assert response.headers["X-Backend"] == "backend-a"
             assert payload == {"backend": "backend-a", "path": "/items?limit=5"}
+
+    event = json.loads(caplog.records[-1].message)
+    assert event == {
+        "event": "proxy_request_completed",
+        "method": "GET",
+        "path": "/items?limit=5",
+        "status": 200,
+        "backend": "backend-a",
+        "outcome": "completed",
+        "duration_ms": event["duration_ms"],
+    }
+    assert event["duration_ms"] >= 0
 
 
 def test_routes_successive_requests_round_robin() -> None:
@@ -96,12 +117,63 @@ def test_routes_successive_requests_round_robin() -> None:
         running_server(upstream_b),
         running_server(proxy),
     ):
+        with urlopen(f"{proxy_url(proxy)}/admin/backends"):
+            pass
+
         selected = []
         for _ in range(4):
             with urlopen(f"{proxy_url(proxy)}/") as response:
                 selected.append(json.load(response)["backend"])
 
     assert selected == ["backend-a", "backend-b", "backend-a", "backend-b"]
+
+
+def test_admin_endpoint_returns_backend_snapshot() -> None:
+    backends = [
+        Backend("backend-a", "http://127.0.0.1:9001"),
+        Backend("backend-b", "http://127.0.0.1:9002"),
+    ]
+    pool = RoundRobinPool(backends)
+    pool.set_health("backend-b", healthy=False)
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    with running_server(proxy):
+        with urlopen(f"{proxy_url(proxy)}/admin/backends") as response:
+            payload = json.load(response)
+
+            assert response.status == 200
+            assert response.headers.get_content_type() == "application/json"
+            assert payload == [
+                {
+                    "name": "backend-a",
+                    "url": "http://127.0.0.1:9001",
+                    "healthy": True,
+                },
+                {
+                    "name": "backend-b",
+                    "url": "http://127.0.0.1:9002",
+                    "healthy": False,
+                },
+            ]
+
+
+def test_admin_endpoint_rejects_post() -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:9001")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    request = Request(
+        f"{proxy_url(proxy)}/admin/backends",
+        data=b"{}",
+        method="POST",
+    )
+
+    with running_server(proxy):
+        try:
+            urlopen(request)
+        except HTTPError as error:
+            assert error.code == 405
+            assert error.read() == b"Administration endpoint is read-only\n"
+        else:
+            raise AssertionError("expected the administration endpoint to reject POST")
 
 
 def test_forwards_post_body_and_content_type() -> None:
@@ -128,13 +200,18 @@ def test_forwards_post_body_and_content_type() -> None:
             }
 
 
-def test_returns_503_when_no_backend_is_healthy() -> None:
+def test_returns_503_when_no_backend_is_healthy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     backend = Backend("backend-a", "http://127.0.0.1:1")
     pool = RoundRobinPool([backend])
     pool.set_health("backend-a", healthy=False)
     proxy = create_proxy_server(("127.0.0.1", 0), pool)
 
-    with running_server(proxy):
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(proxy),
+    ):
         try:
             urlopen(f"{proxy_url(proxy)}/")
         except HTTPError as error:
@@ -142,3 +219,8 @@ def test_returns_503_when_no_backend_is_healthy() -> None:
             assert error.read() == b"No healthy backends available\n"
         else:
             raise AssertionError("expected the proxy to return 503")
+
+    event = json.loads(caplog.records[-1].message)
+    assert event["status"] == 503
+    assert event["backend"] is None
+    assert event["outcome"] == "no_healthy_backend"

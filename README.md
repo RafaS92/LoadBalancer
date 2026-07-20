@@ -125,6 +125,18 @@ connection errors, timeouts, and other statuses remove a backend from rotation.
 All backends keep being checked, so recovered instances rejoin automatically.
 
 The health path, interval, and timeout are configurable and validated before
-startup. This checkpoint performs probes sequentially and still buffers request
-and response bodies in memory. The next checkpoint will expose backend state
-through a small administration endpoint for direct inspection.
+startup. Backend state is available from the read-only administration endpoint:
+
+```shell
+curl http://127.0.0.1:8080/admin/backends
+```
+
+It returns each backend's name, URL, and current health as JSON without changing
+the routing sequence. The endpoint is currently unauthenticated and shares the
+traffic listener, so it should not be exposed publicly. This checkpoint still
+performs probes sequentially and buffers request and response bodies in memory.
+Each completed proxy request writes one JSON log event containing its method,
+path, selected backend, status, outcome, and duration. Request headers and
+bodies are intentionally excluded to avoid leaking sensitive data. The next
+checkpoint will add basic counters and latency metrics derived from the same
+request outcomes.

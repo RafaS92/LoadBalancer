@@ -1,5 +1,7 @@
 """Application entry point."""
 
+import logging
+
 from load_balancer.config import parse_settings
 from load_balancer.health import HealthChecker
 from load_balancer.proxy import create_proxy_server
@@ -14,6 +16,7 @@ def project_status() -> str:
 def main() -> None:
     """Run the proxy using validated command-line settings."""
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = parse_settings()
     pool = RoundRobinPool(list(settings.backends))
     health_checker = HealthChecker(
