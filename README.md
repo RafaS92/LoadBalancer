@@ -115,7 +115,12 @@ load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --backend api-b=http://10.0.0.2:9000
 ```
 
-Configuration is validated before the server starts. This checkpoint still
-buffers request and response bodies in memory and does not retry requests. The
-next checkpoint will introduce active health checks so failed backends can be
-removed from and restored to the routing rotation automatically.
+Configuration is validated before the server starts. A background health
+checker uses HTTPX to request `/health` from every backend immediately at
+startup and every two seconds afterward. Only `2xx` responses are healthy;
+connection errors, timeouts, and other statuses remove a backend from rotation.
+All backends keep being checked, so recovered instances rejoin automatically.
+
+This checkpoint performs probes sequentially and still buffers request and
+response bodies in memory. The next checkpoint will make health timing and path
+configurable and expose backend state for direct inspection.

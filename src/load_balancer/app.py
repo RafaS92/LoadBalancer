@@ -1,6 +1,7 @@
 """Application entry point."""
 
 from load_balancer.config import parse_settings
+from load_balancer.health import HealthChecker
 from load_balancer.proxy import create_proxy_server
 from load_balancer.routing import RoundRobinPool
 
@@ -15,17 +16,20 @@ def main() -> None:
 
     settings = parse_settings()
     pool = RoundRobinPool(list(settings.backends))
+    health_checker = HealthChecker(pool)
     server = create_proxy_server(
         (settings.listen_host, settings.listen_port),
         pool,
     )
     host, port = server.server_address
     print(f"Load balancer listening on http://{host}:{port}")
+    health_checker.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        health_checker.stop()
         server.server_close()
 
 
