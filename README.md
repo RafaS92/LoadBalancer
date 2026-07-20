@@ -153,5 +153,18 @@ includes each count. Routing defaults to `round-robin`; passing
 active-request count and uses round-robin ordering to break ties. The next
 health checker requires two consecutive failures before removing a backend and
 two consecutive successes before restoring it by default. Either threshold is
-configurable. The next checkpoint will expose health transitions through
-structured logs and metrics so operators can see why routing state changed.
+configurable. Each resulting state change emits a structured
+`backend_health_changed` log event. Prometheus exposes current backend health as
+a `1` or `0` gauge and counts transitions by backend and destination state. The
+administration API now separates automatic health from operator intent:
+
+```shell
+curl -X POST http://127.0.0.1:8080/admin/backends/backend-a/disable
+curl -X POST http://127.0.0.1:8080/admin/backends/backend-a/enable
+```
+
+Disabled backends receive no new requests, but existing requests finish and
+health checks continue. A health recovery never overrides a disabled state.
+These unauthenticated actions are intended for local administration only. The
+next checkpoint will add graceful draining, which waits for active requests to
+reach zero before confirming maintenance readiness.

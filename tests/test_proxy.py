@@ -148,12 +148,14 @@ def test_admin_endpoint_returns_backend_snapshot() -> None:
                     "name": "backend-a",
                     "url": "http://127.0.0.1:9001",
                     "healthy": True,
+                    "enabled": True,
                     "active_requests": 0,
                 },
                 {
                     "name": "backend-b",
                     "url": "http://127.0.0.1:9002",
                     "healthy": False,
+                    "enabled": True,
                     "active_requests": 0,
                 },
             ]
@@ -220,6 +222,45 @@ def test_admin_endpoint_rejects_post() -> None:
             assert error.read() == b"Internal endpoint is read-only\n"
         else:
             raise AssertionError("expected the administration endpoint to reject POST")
+
+
+def test_admin_can_disable_and_enable_backend() -> None:
+    upstream_a = backend_server("backend-a")
+    upstream_b = backend_server("backend-b")
+    pool = RoundRobinPool(
+        [
+            backend_for(upstream_a, "backend-a"),
+            backend_for(upstream_b, "backend-b"),
+        ]
+    )
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    def change_state(action: str) -> dict[str, object]:
+        request = Request(
+            f"{proxy_url(proxy)}/admin/backends/backend-a/{action}",
+            data=b"",
+            method="POST",
+        )
+        with urlopen(request) as response:
+            return json.load(response)
+
+    with (
+        running_server(upstream_a),
+        running_server(upstream_b),
+        running_server(proxy),
+    ):
+        assert change_state("disable")["enabled"] is False
+        with urlopen(f"{proxy_url(proxy)}/") as response:
+            assert json.load(response)["backend"] == "backend-b"
+
+        pool.set_health("backend-a", healthy=False)
+        pool.set_health("backend-a", healthy=True)
+        with urlopen(f"{proxy_url(proxy)}/") as response:
+            assert json.load(response)["backend"] == "backend-b"
+
+        assert change_state("enable")["enabled"] is True
+        with urlopen(f"{proxy_url(proxy)}/") as response:
+            assert json.load(response)["backend"] == "backend-a"
 
 
 def test_metrics_endpoint_exposes_request_count_and_latency() -> None:

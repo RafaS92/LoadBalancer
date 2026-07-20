@@ -25,6 +25,7 @@ class BackendStatus:
 
     backend: Backend
     healthy: bool
+    enabled: bool
     active_requests: int
 
 
@@ -36,6 +37,8 @@ class BackendPool(Protocol):
     def release(self, name: str) -> None: ...
 
     def set_health(self, name: str, *, healthy: bool) -> None: ...
+
+    def set_enabled(self, name: str, *, enabled: bool) -> None: ...
 
     def snapshot(self) -> tuple[BackendStatus, ...]: ...
 
@@ -58,6 +61,7 @@ class RoundRobinPool:
 
         self._backends = tuple(backends)
         self._healthy = {backend.name: True for backend in backends}
+        self._enabled = {backend.name: True for backend in backends}
         self._active_requests = {backend.name: 0 for backend in backends}
         self._next_index = 0
         self._lock = Lock()
@@ -88,12 +92,20 @@ class RoundRobinPool:
             self._active_requests[name] -= 1
 
     def set_health(self, name: str, *, healthy: bool) -> None:
-        """Update whether a backend is eligible for new requests."""
+        """Update whether health checks consider a backend healthy."""
 
         with self._lock:
             if name not in self._healthy:
                 raise KeyError(f"unknown backend: {name}")
             self._healthy[name] = healthy
+
+    def set_enabled(self, name: str, *, enabled: bool) -> None:
+        """Update whether an operator allows new requests to a backend."""
+
+        with self._lock:
+            if name not in self._enabled:
+                raise KeyError(f"unknown backend: {name}")
+            self._enabled[name] = enabled
 
     def snapshot(self) -> tuple[BackendStatus, ...]:
         """Return a consistent, read-only snapshot of all backend states."""
@@ -103,6 +115,7 @@ class RoundRobinPool:
                 BackendStatus(
                     backend,
                     self._healthy[backend.name],
+                    self._enabled[backend.name],
                     self._active_requests[backend.name],
                 )
                 for backend in self._backends
@@ -114,10 +127,15 @@ class RoundRobinPool:
         for offset in range(len(self._backends)):
             index = (self._next_index + offset) % len(self._backends)
             backend = self._backends[index]
-            if self._healthy[backend.name]:
+            if self._is_eligible(backend):
                 self._next_index = (index + 1) % len(self._backends)
                 return backend
         return None
+
+    def _is_eligible(self, backend: Backend) -> bool:
+        """Return whether health and operator state allow new requests."""
+
+        return self._healthy[backend.name] and self._enabled[backend.name]
 
 
 class LeastConnectionsPool(RoundRobinPool):
@@ -126,22 +144,20 @@ class LeastConnectionsPool(RoundRobinPool):
     def _choose_healthy_backend(self) -> Backend | None:
         """Choose the least busy backend, using round-robin to break ties."""
 
-        healthy_backends = [
-            backend
-            for backend in self._backends
-            if self._healthy[backend.name]
+        eligible_backends = [
+            backend for backend in self._backends if self._is_eligible(backend)
         ]
-        if not healthy_backends:
+        if not eligible_backends:
             return None
 
         fewest_requests = min(
-            self._active_requests[backend.name] for backend in healthy_backends
+            self._active_requests[backend.name] for backend in eligible_backends
         )
         for offset in range(len(self._backends)):
             index = (self._next_index + offset) % len(self._backends)
             backend = self._backends[index]
             if (
-                self._healthy[backend.name]
+                self._is_eligible(backend)
                 and self._active_requests[backend.name] == fewest_requests
             ):
                 self._next_index = (index + 1) % len(self._backends)

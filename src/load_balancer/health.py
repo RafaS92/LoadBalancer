@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from threading import Event, Thread
 
 import httpx
 
+from load_balancer.metrics import LoadBalancerMetrics
 from load_balancer.routing import Backend, BackendPool
+
+HEALTH_LOGGER = logging.getLogger("load_balancer.health")
 
 
 class HealthChecker:
@@ -21,6 +26,7 @@ class HealthChecker:
         timeout: float = 0.5,
         failure_threshold: int = 2,
         success_threshold: int = 2,
+        metrics: LoadBalancerMetrics | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         if not path.startswith("/"):
@@ -35,12 +41,19 @@ class HealthChecker:
         self._interval = interval
         self._failure_threshold = failure_threshold
         self._success_threshold = success_threshold
+        self._metrics = metrics or LoadBalancerMetrics()
+        initial_statuses = pool.snapshot()
         self._consecutive_failures = {
-            status.backend.name: 0 for status in pool.snapshot()
+            status.backend.name: 0 for status in initial_statuses
         }
         self._consecutive_successes = {
-            status.backend.name: 0 for status in pool.snapshot()
+            status.backend.name: 0 for status in initial_statuses
         }
+        for status in initial_statuses:
+            self._metrics.set_backend_health(
+                status.backend.name,
+                healthy=status.healthy,
+            )
         self._client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
         self._stop_event = Event()
@@ -106,6 +119,12 @@ class HealthChecker:
             self._consecutive_successes[name] += 1
             if self._consecutive_successes[name] >= self._success_threshold:
                 self._pool.set_health(name, healthy=True)
+                self._record_transition(
+                    name,
+                    healthy=True,
+                    reason="success_threshold_reached",
+                    threshold=self._success_threshold,
+                )
                 self._consecutive_successes[name] = 0
             return
 
@@ -117,4 +136,34 @@ class HealthChecker:
         self._consecutive_failures[name] += 1
         if self._consecutive_failures[name] >= self._failure_threshold:
             self._pool.set_health(name, healthy=False)
+            self._record_transition(
+                name,
+                healthy=False,
+                reason="failure_threshold_reached",
+                threshold=self._failure_threshold,
+            )
             self._consecutive_failures[name] = 0
+
+    def _record_transition(
+        self,
+        name: str,
+        *,
+        healthy: bool,
+        reason: str,
+        threshold: int,
+    ) -> None:
+        """Record one meaningful backend state change."""
+
+        self._metrics.record_health_transition(name, healthy=healthy)
+        HEALTH_LOGGER.info(
+            json.dumps(
+                {
+                    "event": "backend_health_changed",
+                    "backend": name,
+                    "healthy": healthy,
+                    "reason": reason,
+                    "threshold": threshold,
+                },
+                separators=(",", ":"),
+            )
+        )

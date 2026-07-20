@@ -1,8 +1,12 @@
+import json
+import logging
 from threading import Event
 
 import httpx
+import pytest
 
 from load_balancer.health import HealthChecker
+from load_balancer.metrics import LoadBalancerMetrics
 from load_balancer.routing import Backend, RoundRobinPool
 
 BACKEND = Backend("backend-a", "http://backend-a:9001")
@@ -83,3 +87,57 @@ def test_network_error_marks_backend_unhealthy() -> None:
         checker.check_once()
 
     assert pool.choose() is None
+
+
+def test_health_transitions_emit_logs_and_prometheus_metrics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state = {"status": 503}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(state["status"])
+
+    pool = RoundRobinPool([BACKEND])
+    metrics = LoadBalancerMetrics()
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        caplog.at_level(logging.INFO, logger="load_balancer.health"),
+    ):
+        checker = HealthChecker(
+            pool,
+            failure_threshold=1,
+            success_threshold=1,
+            metrics=metrics,
+            client=client,
+        )
+        checker.check_once()
+        state["status"] = 200
+        checker.check_once()
+
+    events = [json.loads(record.message) for record in caplog.records]
+    assert events == [
+        {
+            "event": "backend_health_changed",
+            "backend": "backend-a",
+            "healthy": False,
+            "reason": "failure_threshold_reached",
+            "threshold": 1,
+        },
+        {
+            "event": "backend_health_changed",
+            "backend": "backend-a",
+            "healthy": True,
+            "reason": "success_threshold_reached",
+            "threshold": 1,
+        },
+    ]
+    rendered = metrics.render().decode()
+    assert 'load_balancer_backend_healthy{backend="backend-a"} 1.0' in rendered
+    assert (
+        'load_balancer_backend_health_transitions_total{backend="backend-a",'
+        'state="unhealthy"} 1.0'
+    ) in rendered
+    assert (
+        'load_balancer_backend_health_transitions_total{backend="backend-a",'
+        'state="healthy"} 1.0'
+    ) in rendered

@@ -7,11 +7,11 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import perf_counter
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from prometheus_client import CONTENT_TYPE_LATEST
 
-from load_balancer.metrics import ProxyMetrics
+from load_balancer.metrics import LoadBalancerMetrics
 from load_balancer.routing import Backend, BackendPool
 
 HOP_BY_HOP_HEADERS = {
@@ -27,6 +27,7 @@ HOP_BY_HOP_HEADERS = {
 ADMIN_BACKENDS_PATH = "/admin/backends"
 METRICS_PATH = "/metrics"
 REQUEST_LOGGER = logging.getLogger("load_balancer.requests")
+ADMIN_LOGGER = logging.getLogger("load_balancer.admin")
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
@@ -34,7 +35,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     pool: BackendPool
-    metrics: ProxyMetrics
+    metrics: LoadBalancerMetrics
     upstream_timeout = 2.0
 
     def do_GET(self) -> None:
@@ -55,10 +56,6 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         """Read and forward one POST request body."""
 
-        if urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}:
-            self._send_body(405, b"Internal endpoint is read-only\n")
-            return
-
         raw_length = self.headers.get("Content-Length", "0")
         try:
             content_length = int(raw_length)
@@ -71,6 +68,16 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             return
 
         body = self.rfile.read(content_length)
+        backend_action = self._parse_backend_action()
+        if backend_action is not None:
+            name, enabled = backend_action
+            self._set_backend_enabled(name, enabled=enabled)
+            return
+
+        if urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}:
+            self._send_body(405, b"Internal endpoint is read-only\n")
+            return
+
         self._proxy_request("POST", body)
 
     def _proxy_request(self, method: str, body: bytes | None = None) -> None:
@@ -152,12 +159,58 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     "name": status.backend.name,
                     "url": status.backend.url,
                     "healthy": status.healthy,
+                    "enabled": status.enabled,
                     "active_requests": status.active_requests,
                 }
                 for status in self.pool.snapshot()
             ]
         ).encode()
         self._send_body(200, body, content_type="application/json")
+
+    def _parse_backend_action(self) -> tuple[str, bool] | None:
+        """Parse /admin/backends/{name}/enable or disable."""
+
+        parts = urlsplit(self.path).path.split("/")
+        if (
+            len(parts) != 5
+            or parts[:3] != ["", "admin", "backends"]
+            or not parts[3]
+            or parts[4] not in {"enable", "disable"}
+        ):
+            return None
+        return unquote(parts[3]), parts[4] == "enable"
+
+    def _set_backend_enabled(self, name: str, *, enabled: bool) -> None:
+        """Apply one operator routing action and return the resulting state."""
+
+        try:
+            self.pool.set_enabled(name, enabled=enabled)
+        except KeyError:
+            self._send_body(404, b"Unknown backend\n")
+            return
+
+        status = next(
+            status for status in self.pool.snapshot() if status.backend.name == name
+        )
+        body = json.dumps(
+            {
+                "name": status.backend.name,
+                "healthy": status.healthy,
+                "enabled": status.enabled,
+                "active_requests": status.active_requests,
+            }
+        ).encode()
+        self._send_body(200, body, content_type="application/json")
+        ADMIN_LOGGER.info(
+            json.dumps(
+                {
+                    "event": "backend_operator_state_changed",
+                    "backend": name,
+                    "enabled": enabled,
+                },
+                separators=(",", ":"),
+            )
+        )
 
     def _send_body(
         self,
@@ -217,7 +270,7 @@ def create_proxy_server(
     pool: BackendPool,
     *,
     upstream_timeout: float = 2.0,
-    metrics: ProxyMetrics | None = None,
+    metrics: LoadBalancerMetrics | None = None,
 ) -> ThreadingHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
 
@@ -226,7 +279,7 @@ def create_proxy_server(
         (ProxyRequestHandler,),
         {
             "pool": pool,
-            "metrics": metrics or ProxyMetrics(),
+            "metrics": metrics or LoadBalancerMetrics(),
             "upstream_timeout": upstream_timeout,
         },
     )

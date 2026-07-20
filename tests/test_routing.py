@@ -92,6 +92,7 @@ def test_snapshot_is_consistent_and_ordered(backends: list[Backend]) -> None:
 
     assert [status.backend for status in snapshot] == backends
     assert [status.healthy for status in snapshot] == [True, False, True]
+    assert [status.enabled for status in snapshot] == [True, True, True]
     assert [status.active_requests for status in snapshot] == [0, 0, 0]
 
 
@@ -115,6 +116,25 @@ def test_rejects_release_without_matching_acquire(backends: list[Backend]) -> No
 
     with pytest.raises(RuntimeError, match="no active requests: backend-a"):
         pool.release("backend-a")
+
+
+def test_disabled_backend_stays_out_of_rotation_after_health_recovery(
+    backends: list[Backend],
+) -> None:
+    pool = RoundRobinPool(backends)
+    pool.set_enabled("backend-b", enabled=False)
+
+    assert [pool.choose() for _ in range(4)] == [
+        backends[0],
+        backends[2],
+        backends[0],
+        backends[2],
+    ]
+
+    pool.set_health("backend-b", healthy=False)
+    pool.set_health("backend-b", healthy=True)
+    assert pool.snapshot()[1].enabled is False
+    assert [pool.choose() for _ in range(2)] == [backends[0], backends[2]]
 
 
 def test_least_connections_selects_the_least_busy_backend(

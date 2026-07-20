@@ -1,10 +1,16 @@
-"""Prometheus metrics for proxied requests."""
+"""Prometheus metrics for the load balancer."""
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 
 
-class ProxyMetrics:
-    """Own and update the metrics exported by one proxy server."""
+class LoadBalancerMetrics:
+    """Own and update metrics exported by one load-balancer process."""
 
     def __init__(self) -> None:
         self._registry = CollectorRegistry()
@@ -18,6 +24,18 @@ class ProxyMetrics:
             "load_balancer_proxy_request_duration_seconds",
             "Time spent selecting a backend and proxying a request",
             ("method", "outcome", "backend"),
+            registry=self._registry,
+        )
+        self._backend_healthy = Gauge(
+            "load_balancer_backend_healthy",
+            "Whether a configured backend is currently healthy",
+            ("backend",),
+            registry=self._registry,
+        )
+        self._health_transitions = Counter(
+            "load_balancer_backend_health_transitions_total",
+            "Backend transitions into healthy or unhealthy state",
+            ("backend", "state"),
             registry=self._registry,
         )
 
@@ -44,6 +62,18 @@ class ProxyMetrics:
             outcome=outcome,
             backend=backend_label,
         ).observe(duration_seconds)
+
+    def set_backend_health(self, backend: str, *, healthy: bool) -> None:
+        """Set the current-health gauge without recording a transition."""
+
+        self._backend_healthy.labels(backend=backend).set(1 if healthy else 0)
+
+    def record_health_transition(self, backend: str, *, healthy: bool) -> None:
+        """Update current health and count one state transition."""
+
+        state = "healthy" if healthy else "unhealthy"
+        self.set_backend_health(backend, healthy=healthy)
+        self._health_transitions.labels(backend=backend, state=state).inc()
 
     def render(self) -> bytes:
         """Render this server's registry in Prometheus text format."""
