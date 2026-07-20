@@ -26,6 +26,8 @@ class Settings:
     health_path: str
     health_interval: float
     health_timeout: float
+    health_failure_threshold: int
+    health_success_threshold: int
     strategy: str
 
 
@@ -73,6 +75,18 @@ def positive_float_argument(value: str) -> float:
     return number
 
 
+def positive_integer_argument(value: str) -> int:
+    """Parse a positive whole number."""
+
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("value must be an integer") from error
+    if number <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
+    return number
+
+
 def health_path_argument(value: str) -> str:
     """Parse an absolute HTTP path used for backend probes."""
 
@@ -106,6 +120,18 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         help="maximum seconds for one health probe",
     )
     parser.add_argument(
+        "--health-failure-threshold",
+        type=positive_integer_argument,
+        default=2,
+        help="consecutive failures required to mark a backend unhealthy",
+    )
+    parser.add_argument(
+        "--health-success-threshold",
+        type=positive_integer_argument,
+        default=2,
+        help="consecutive successes required to restore a backend",
+    )
+    parser.add_argument(
         "--backend",
         action="append",
         type=backend_argument,
@@ -124,5 +150,7 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         health_path=parsed.health_path,
         health_interval=parsed.health_interval,
         health_timeout=parsed.health_timeout,
+        health_failure_threshold=parsed.health_failure_threshold,
+        health_success_threshold=parsed.health_success_threshold,
         strategy=parsed.strategy,
     )

@@ -13,6 +13,8 @@ def test_uses_local_demonstration_defaults() -> None:
     assert settings.health_path == "/health"
     assert settings.health_interval == 2.0
     assert settings.health_timeout == 0.5
+    assert settings.health_failure_threshold == 2
+    assert settings.health_success_threshold == 2
     assert settings.strategy == "round-robin"
 
 
@@ -31,6 +33,10 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
             "5",
             "--health-timeout",
             "1.25",
+            "--health-failure-threshold",
+            "3",
+            "--health-success-threshold",
+            "4",
             "--backend",
             "api-a=http://10.0.0.1:9000",
             "--backend",
@@ -43,6 +49,8 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
     assert settings.health_path == "/ready"
     assert settings.health_interval == 5.0
     assert settings.health_timeout == 1.25
+    assert settings.health_failure_threshold == 3
+    assert settings.health_success_threshold == 4
     assert settings.strategy == "least-connections"
     assert settings.backends == (
         Backend("api-a", "http://10.0.0.1:9000"),
@@ -78,6 +86,12 @@ def test_rejects_unknown_routing_strategy() -> None:
 def test_rejects_invalid_health_timing(value: str) -> None:
     with pytest.raises(SystemExit):
         parse_settings(["--health-interval", value])
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "not-a-number"])
+def test_rejects_invalid_health_threshold(value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_settings(["--health-failure-threshold", value])
 
 
 @pytest.mark.parametrize("value", ["health", "//health"])

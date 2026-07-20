@@ -24,6 +24,8 @@ def main() -> None:
         path=settings.health_path,
         interval=settings.health_interval,
         timeout=settings.health_timeout,
+        failure_threshold=settings.health_failure_threshold,
+        success_threshold=settings.health_success_threshold,
     )
     server = create_proxy_server(
         (settings.listen_host, settings.listen_port),

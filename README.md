@@ -116,7 +116,9 @@ load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --backend api-b=http://10.0.0.2:9000 \
   --health-path /ready \
   --health-interval 5 \
-  --health-timeout 1
+  --health-timeout 1 \
+  --health-failure-threshold 3 \
+  --health-success-threshold 2
 ```
 
 Configuration is validated before the server starts. A background health
@@ -149,5 +151,7 @@ backend through matched acquire/release operations, and `/admin/backends`
 includes each count. Routing defaults to `round-robin`; passing
 `--strategy least-connections` selects the healthy backend with the lowest
 active-request count and uses round-robin ordering to break ties. The next
-checkpoint will add failure thresholds so a single unsuccessful health probe
-does not immediately change routing state.
+health checker requires two consecutive failures before removing a backend and
+two consecutive successes before restoring it by default. Either threshold is
+configurable. The next checkpoint will expose health transitions through
+structured logs and metrics so operators can see why routing state changed.

@@ -19,16 +19,28 @@ class HealthChecker:
         path: str = "/health",
         interval: float = 2.0,
         timeout: float = 0.5,
+        failure_threshold: int = 2,
+        success_threshold: int = 2,
         client: httpx.Client | None = None,
     ) -> None:
         if not path.startswith("/"):
             raise ValueError("health path must start with /")
         if interval <= 0 or timeout <= 0:
             raise ValueError("health interval and timeout must be positive")
+        if failure_threshold <= 0 or success_threshold <= 0:
+            raise ValueError("health thresholds must be positive")
 
         self._pool = pool
         self._path = path
         self._interval = interval
+        self._failure_threshold = failure_threshold
+        self._success_threshold = success_threshold
+        self._consecutive_failures = {
+            status.backend.name: 0 for status in pool.snapshot()
+        }
+        self._consecutive_successes = {
+            status.backend.name: 0 for status in pool.snapshot()
+        }
         self._client = client or httpx.Client(timeout=timeout)
         self._owns_client = client is None
         self._stop_event = Event()
@@ -38,8 +50,8 @@ class HealthChecker:
         """Run one complete health-check cycle."""
 
         for status in self._pool.snapshot():
-            healthy = self._probe(status.backend)
-            self._pool.set_health(status.backend.name, healthy=healthy)
+            succeeded = self._probe(status.backend)
+            self._apply_result(status.backend.name, status.healthy, succeeded)
 
     def start(self) -> None:
         """Start checking in a background thread."""
@@ -79,3 +91,30 @@ class HealthChecker:
             return response.is_success
         except httpx.HTTPError:
             return False
+
+    def _apply_result(
+        self, name: str, currently_healthy: bool, succeeded: bool
+    ) -> None:
+        """Apply one probe result after enforcing consecutive thresholds."""
+
+        if succeeded:
+            self._consecutive_failures[name] = 0
+            if currently_healthy:
+                self._consecutive_successes[name] = 0
+                return
+
+            self._consecutive_successes[name] += 1
+            if self._consecutive_successes[name] >= self._success_threshold:
+                self._pool.set_health(name, healthy=True)
+                self._consecutive_successes[name] = 0
+            return
+
+        self._consecutive_successes[name] = 0
+        if not currently_healthy:
+            self._consecutive_failures[name] = 0
+            return
+
+        self._consecutive_failures[name] += 1
+        if self._consecutive_failures[name] >= self._failure_threshold:
+            self._pool.set_health(name, healthy=False)
+            self._consecutive_failures[name] = 0
