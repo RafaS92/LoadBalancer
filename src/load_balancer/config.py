@@ -23,6 +23,9 @@ class Settings:
     listen_host: str
     listen_port: int
     backends: tuple[Backend, ...]
+    health_path: str
+    health_interval: float
+    health_timeout: float
 
 
 def backend_argument(value: str) -> Backend:
@@ -57,12 +60,45 @@ def port_argument(value: str) -> int:
     return port
 
 
+def positive_float_argument(value: str) -> float:
+    """Parse a positive number of seconds."""
+
+    try:
+        number = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("value must be a number") from error
+    if number <= 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
+    return number
+
+
+def health_path_argument(value: str) -> str:
+    """Parse an absolute HTTP path used for backend probes."""
+
+    if not value.startswith("/") or value.startswith("//"):
+        raise argparse.ArgumentTypeError("health path must start with one /")
+    return value
+
+
 def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
     """Parse command-line arguments into validated settings."""
 
     parser = argparse.ArgumentParser(description="Run the learning load balancer")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=port_argument, default=8080)
+    parser.add_argument("--health-path", type=health_path_argument, default="/health")
+    parser.add_argument(
+        "--health-interval",
+        type=positive_float_argument,
+        default=2.0,
+        help="seconds between health-check cycles",
+    )
+    parser.add_argument(
+        "--health-timeout",
+        type=positive_float_argument,
+        default=0.5,
+        help="maximum seconds for one health probe",
+    )
     parser.add_argument(
         "--backend",
         action="append",
@@ -75,4 +111,11 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
     if len(names) != len(set(names)):
         parser.error("backend names must be unique")
 
-    return Settings(parsed.listen_host, parsed.listen_port, backends)
+    return Settings(
+        listen_host=parsed.listen_host,
+        listen_port=parsed.listen_port,
+        backends=backends,
+        health_path=parsed.health_path,
+        health_interval=parsed.health_interval,
+        health_timeout=parsed.health_timeout,
+    )

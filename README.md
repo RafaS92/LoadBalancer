@@ -112,7 +112,10 @@ Custom addresses use repeatable `--backend` arguments:
 ```shell
 load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --backend api-a=http://10.0.0.1:9000 \
-  --backend api-b=http://10.0.0.2:9000
+  --backend api-b=http://10.0.0.2:9000 \
+  --health-path /ready \
+  --health-interval 5 \
+  --health-timeout 1
 ```
 
 Configuration is validated before the server starts. A background health
@@ -121,6 +124,7 @@ startup and every two seconds afterward. Only `2xx` responses are healthy;
 connection errors, timeouts, and other statuses remove a backend from rotation.
 All backends keep being checked, so recovered instances rejoin automatically.
 
-This checkpoint performs probes sequentially and still buffers request and
-response bodies in memory. The next checkpoint will make health timing and path
-configurable and expose backend state for direct inspection.
+The health path, interval, and timeout are configurable and validated before
+startup. This checkpoint performs probes sequentially and still buffers request
+and response bodies in memory. The next checkpoint will expose backend state
+through a small administration endpoint for direct inspection.

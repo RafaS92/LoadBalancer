@@ -16,7 +16,12 @@ def main() -> None:
 
     settings = parse_settings()
     pool = RoundRobinPool(list(settings.backends))
-    health_checker = HealthChecker(pool)
+    health_checker = HealthChecker(
+        pool,
+        path=settings.health_path,
+        interval=settings.health_interval,
+        timeout=settings.health_timeout,
+    )
     server = create_proxy_server(
         (settings.listen_host, settings.listen_port),
         pool,
