@@ -13,6 +13,7 @@ def test_uses_local_demonstration_defaults() -> None:
     assert settings.health_path == "/health"
     assert settings.health_interval == 2.0
     assert settings.health_timeout == 0.5
+    assert settings.strategy == "round-robin"
 
 
 def test_accepts_custom_listener_and_repeated_backends() -> None:
@@ -22,6 +23,8 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
             "0.0.0.0",
             "--listen-port",
             "8088",
+            "--strategy",
+            "least-connections",
             "--health-path",
             "/ready",
             "--health-interval",
@@ -40,6 +43,7 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
     assert settings.health_path == "/ready"
     assert settings.health_interval == 5.0
     assert settings.health_timeout == 1.25
+    assert settings.strategy == "least-connections"
     assert settings.backends == (
         Backend("api-a", "http://10.0.0.1:9000"),
         Backend("api-b", "http://10.0.0.2:9000"),
@@ -63,6 +67,11 @@ def test_rejects_invalid_backend_definitions(backend: str) -> None:
 def test_rejects_invalid_port() -> None:
     with pytest.raises(SystemExit):
         parse_settings(["--listen-port", "70000"])
+
+
+def test_rejects_unknown_routing_strategy() -> None:
+    with pytest.raises(SystemExit):
+        parse_settings(["--strategy", "random"])
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "not-a-number"])

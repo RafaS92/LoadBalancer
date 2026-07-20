@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from load_balancer.metrics import ProxyMetrics
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.routing import Backend, BackendPool
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -33,7 +33,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     """Forward supported HTTP requests to backends selected by a shared pool."""
 
     protocol_version = "HTTP/1.1"
-    pool: RoundRobinPool
+    pool: BackendPool
     metrics: ProxyMetrics
     upstream_timeout = 2.0
 
@@ -77,7 +77,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         """Select a backend and relay one supported HTTP request."""
 
         started_at = perf_counter()
-        backend = self.pool.choose()
+        backend = self.pool.acquire()
         if backend is None:
             self._send_body(503, b"No healthy backends available\n")
             self._record_completion(
@@ -86,29 +86,32 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            status, reason, headers, response_body = self._forward(
-                method, backend, body
-            )
-        except (OSError, http.client.HTTPException):
-            self._send_body(502, b"Selected backend could not be reached\n")
-            self._record_completion(
-                method,
-                502,
-                backend,
-                "backend_connection_failed",
-                started_at,
-            )
-            return
+            try:
+                status, reason, headers, response_body = self._forward(
+                    method, backend, body
+                )
+            except (OSError, http.client.HTTPException):
+                self._send_body(502, b"Selected backend could not be reached\n")
+                self._record_completion(
+                    method,
+                    502,
+                    backend,
+                    "backend_connection_failed",
+                    started_at,
+                )
+                return
 
-        self.send_response(status, reason)
-        for name, value in headers:
-            lowered = name.lower()
-            if lowered not in HOP_BY_HOP_HEADERS and lowered != "content-length":
-                self.send_header(name, value)
-        self.send_header("Content-Length", str(len(response_body)))
-        self.end_headers()
-        self.wfile.write(response_body)
-        self._record_completion(method, status, backend, "completed", started_at)
+            self.send_response(status, reason)
+            for name, value in headers:
+                lowered = name.lower()
+                if lowered not in HOP_BY_HOP_HEADERS and lowered != "content-length":
+                    self.send_header(name, value)
+            self.send_header("Content-Length", str(len(response_body)))
+            self.end_headers()
+            self.wfile.write(response_body)
+            self._record_completion(method, status, backend, "completed", started_at)
+        finally:
+            self.pool.release(backend.name)
 
     def _forward(
         self, method: str, backend: Backend, body: bytes | None
@@ -149,6 +152,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     "name": status.backend.name,
                     "url": status.backend.url,
                     "healthy": status.healthy,
+                    "active_requests": status.active_requests,
                 }
                 for status in self.pool.snapshot()
             ]
@@ -210,7 +214,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
 def create_proxy_server(
     address: tuple[str, int],
-    pool: RoundRobinPool,
+    pool: BackendPool,
     *,
     upstream_timeout: float = 2.0,
     metrics: ProxyMetrics | None = None,

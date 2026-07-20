@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.routing import Backend, LeastConnectionsPool, RoundRobinPool
 
 
 @pytest.fixture
@@ -92,6 +92,64 @@ def test_snapshot_is_consistent_and_ordered(backends: list[Backend]) -> None:
 
     assert [status.backend for status in snapshot] == backends
     assert [status.healthy for status in snapshot] == [True, False, True]
+    assert [status.active_requests for status in snapshot] == [0, 0, 0]
+
+
+def test_acquire_and_release_track_active_requests(backends: list[Backend]) -> None:
+    pool = RoundRobinPool(backends)
+
+    first = pool.acquire()
+    second = pool.acquire()
+
+    assert first == backends[0]
+    assert second == backends[1]
+    assert [status.active_requests for status in pool.snapshot()] == [1, 1, 0]
+
+    pool.release("backend-a")
+    pool.release("backend-b")
+    assert [status.active_requests for status in pool.snapshot()] == [0, 0, 0]
+
+
+def test_rejects_release_without_matching_acquire(backends: list[Backend]) -> None:
+    pool = RoundRobinPool(backends)
+
+    with pytest.raises(RuntimeError, match="no active requests: backend-a"):
+        pool.release("backend-a")
+
+
+def test_least_connections_selects_the_least_busy_backend(
+    backends: list[Backend],
+) -> None:
+    pool = LeastConnectionsPool(backends)
+
+    assert pool.acquire() == backends[0]
+    assert pool.acquire() == backends[1]
+    assert pool.acquire() == backends[2]
+    assert pool.acquire() == backends[0]
+    pool.release("backend-b")
+
+    assert pool.acquire() == backends[1]
+
+
+def test_least_connections_uses_round_robin_to_break_ties(
+    backends: list[Backend],
+) -> None:
+    pool = LeastConnectionsPool(backends)
+
+    assert pool.acquire() == backends[0]
+    pool.release("backend-a")
+
+    assert pool.acquire() == backends[1]
+
+
+def test_least_connections_skips_unhealthy_backend(
+    backends: list[Backend],
+) -> None:
+    pool = LeastConnectionsPool(backends)
+    pool.set_health("backend-a", healthy=False)
+
+    assert pool.acquire() == backends[1]
+    assert pool.acquire() == backends[2]
 
 
 def test_concurrent_selection_preserves_an_even_distribution(

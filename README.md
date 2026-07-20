@@ -111,6 +111,7 @@ Custom addresses use repeatable `--backend` arguments:
 
 ```shell
 load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
+  --strategy least-connections \
   --backend api-a=http://10.0.0.1:9000 \
   --backend api-b=http://10.0.0.2:9000 \
   --health-path /ready \
@@ -143,5 +144,10 @@ Prometheus counters and latency histograms derived from the same completed
 request events are available from `GET /metrics`. The official Prometheus client
 provides thread-safe metric updates and the standard exposition format. Like the
 administration endpoint, metrics currently share the traffic listener and
-should not be exposed publicly. The next checkpoint will track active requests
-per backend as the foundation for least-connections routing.
+should not be exposed publicly. The routing pool now tracks active requests per
+backend through matched acquire/release operations, and `/admin/backends`
+includes each count. Routing defaults to `round-robin`; passing
+`--strategy least-connections` selects the healthy backend with the lowest
+active-request count and uses round-robin ordering to break ties. The next
+checkpoint will add failure thresholds so a single unsuccessful health probe
+does not immediately change routing state.

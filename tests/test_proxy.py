@@ -2,7 +2,7 @@ import json
 import logging
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
+from threading import Event, Thread
 from typing import Iterator
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -148,13 +148,59 @@ def test_admin_endpoint_returns_backend_snapshot() -> None:
                     "name": "backend-a",
                     "url": "http://127.0.0.1:9001",
                     "healthy": True,
+                    "active_requests": 0,
                 },
                 {
                     "name": "backend-b",
                     "url": "http://127.0.0.1:9002",
                     "healthy": False,
+                    "active_requests": 0,
                 },
             ]
+
+
+def test_admin_snapshot_shows_active_request_until_it_completes() -> None:
+    request_started = Event()
+    allow_response = Event()
+
+    class BlockingBackend(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            request_started.set()
+            allow_response.wait(timeout=2)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), BlockingBackend)
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    errors: list[Exception] = []
+
+    def send_request() -> None:
+        try:
+            with urlopen(f"{proxy_url(proxy)}/slow"):
+                pass
+        except Exception as error:
+            errors.append(error)
+
+    with running_server(upstream), running_server(proxy):
+        request_thread = Thread(target=send_request)
+        request_thread.start()
+        try:
+            assert request_started.wait(timeout=1)
+            with urlopen(f"{proxy_url(proxy)}/admin/backends") as response:
+                assert json.load(response)[0]["active_requests"] == 1
+        finally:
+            allow_response.set()
+            request_thread.join()
+
+        with urlopen(f"{proxy_url(proxy)}/admin/backends") as response:
+            assert json.load(response)[0]["active_requests"] == 0
+
+    assert errors == []
 
 
 def test_admin_endpoint_rejects_post() -> None:

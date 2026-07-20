@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
+from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,19 @@ class BackendStatus:
 
     backend: Backend
     healthy: bool
+    active_requests: int
+
+
+class BackendPool(Protocol):
+    """Operations required by proxying and health-checking components."""
+
+    def acquire(self) -> Backend | None: ...
+
+    def release(self, name: str) -> None: ...
+
+    def set_health(self, name: str, *, healthy: bool) -> None: ...
+
+    def snapshot(self) -> tuple[BackendStatus, ...]: ...
 
 
 class RoundRobinPool:
@@ -44,6 +58,7 @@ class RoundRobinPool:
 
         self._backends = tuple(backends)
         self._healthy = {backend.name: True for backend in backends}
+        self._active_requests = {backend.name: 0 for backend in backends}
         self._next_index = 0
         self._lock = Lock()
 
@@ -51,13 +66,26 @@ class RoundRobinPool:
         """Return the next healthy backend, or ``None`` if none are healthy."""
 
         with self._lock:
-            for offset in range(len(self._backends)):
-                index = (self._next_index + offset) % len(self._backends)
-                backend = self._backends[index]
-                if self._healthy[backend.name]:
-                    self._next_index = (index + 1) % len(self._backends)
-                    return backend
-            return None
+            return self._choose_healthy_backend()
+
+    def acquire(self) -> Backend | None:
+        """Select a healthy backend and increment its active-request count."""
+
+        with self._lock:
+            backend = self._choose_healthy_backend()
+            if backend is not None:
+                self._active_requests[backend.name] += 1
+            return backend
+
+    def release(self, name: str) -> None:
+        """Decrement a backend's active-request count after completion."""
+
+        with self._lock:
+            if name not in self._active_requests:
+                raise KeyError(f"unknown backend: {name}")
+            if self._active_requests[name] == 0:
+                raise RuntimeError(f"backend has no active requests: {name}")
+            self._active_requests[name] -= 1
 
     def set_health(self, name: str, *, healthy: bool) -> None:
         """Update whether a backend is eligible for new requests."""
@@ -72,6 +100,60 @@ class RoundRobinPool:
 
         with self._lock:
             return tuple(
-                BackendStatus(backend, self._healthy[backend.name])
+                BackendStatus(
+                    backend,
+                    self._healthy[backend.name],
+                    self._active_requests[backend.name],
+                )
                 for backend in self._backends
             )
+
+    def _choose_healthy_backend(self) -> Backend | None:
+        """Choose the next healthy backend while the caller holds the lock."""
+
+        for offset in range(len(self._backends)):
+            index = (self._next_index + offset) % len(self._backends)
+            backend = self._backends[index]
+            if self._healthy[backend.name]:
+                self._next_index = (index + 1) % len(self._backends)
+                return backend
+        return None
+
+
+class LeastConnectionsPool(RoundRobinPool):
+    """Select the healthy backend handling the fewest active requests."""
+
+    def _choose_healthy_backend(self) -> Backend | None:
+        """Choose the least busy backend, using round-robin to break ties."""
+
+        healthy_backends = [
+            backend
+            for backend in self._backends
+            if self._healthy[backend.name]
+        ]
+        if not healthy_backends:
+            return None
+
+        fewest_requests = min(
+            self._active_requests[backend.name] for backend in healthy_backends
+        )
+        for offset in range(len(self._backends)):
+            index = (self._next_index + offset) % len(self._backends)
+            backend = self._backends[index]
+            if (
+                self._healthy[backend.name]
+                and self._active_requests[backend.name] == fewest_requests
+            ):
+                self._next_index = (index + 1) % len(self._backends)
+                return backend
+        return None
+
+
+def create_pool(backends: list[Backend], strategy: str) -> BackendPool:
+    """Create the configured routing pool."""
+
+    if strategy == "round-robin":
+        return RoundRobinPool(backends)
+    if strategy == "least-connections":
+        return LeastConnectionsPool(backends)
+    raise ValueError(f"unknown routing strategy: {strategy}")

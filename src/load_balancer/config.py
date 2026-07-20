@@ -26,6 +26,7 @@ class Settings:
     health_path: str
     health_interval: float
     health_timeout: float
+    strategy: str
 
 
 def backend_argument(value: str) -> Backend:
@@ -86,6 +87,11 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
     parser = argparse.ArgumentParser(description="Run the learning load balancer")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=port_argument, default=8080)
+    parser.add_argument(
+        "--strategy",
+        choices=("round-robin", "least-connections"),
+        default="round-robin",
+    )
     parser.add_argument("--health-path", type=health_path_argument, default="/health")
     parser.add_argument(
         "--health-interval",
@@ -118,4 +124,5 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         health_path=parsed.health_path,
         health_interval=parsed.health_interval,
         health_timeout=parsed.health_timeout,
+        strategy=parsed.strategy,
     )

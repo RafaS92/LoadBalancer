@@ -5,7 +5,7 @@ import logging
 from load_balancer.config import parse_settings
 from load_balancer.health import HealthChecker
 from load_balancer.proxy import create_proxy_server
-from load_balancer.routing import RoundRobinPool
+from load_balancer.routing import create_pool
 
 
 def project_status() -> str:
@@ -18,7 +18,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     settings = parse_settings()
-    pool = RoundRobinPool(list(settings.backends))
+    pool = create_pool(list(settings.backends), settings.strategy)
     health_checker = HealthChecker(
         pool,
         path=settings.health_path,

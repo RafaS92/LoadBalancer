@@ -6,7 +6,7 @@ from threading import Event, Thread
 
 import httpx
 
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.routing import Backend, BackendPool
 
 
 class HealthChecker:
@@ -14,7 +14,7 @@ class HealthChecker:
 
     def __init__(
         self,
-        pool: RoundRobinPool,
+        pool: BackendPool,
         *,
         path: str = "/health",
         interval: float = 2.0,
