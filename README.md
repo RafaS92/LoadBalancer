@@ -100,3 +100,11 @@ Version 1 is complete when:
 The project advances one small step at a time. Each step introduces one main
 concept, adds focused verification, records the important tradeoff, and ends at
 a runnable checkpoint before the next step begins.
+
+## Current checkpoint
+
+The routing core now models named backends and selects healthy instances with a
+thread-safe round-robin pool. Unhealthy instances are skipped, recovered
+instances can rejoin the rotation, and an exhausted pool reports that no route
+is available. The next checkpoint is to place a minimal HTTP reverse-proxy
+handler in front of this routing contract.
