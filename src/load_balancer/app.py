@@ -1,7 +1,8 @@
 """Application entry point."""
 
+from load_balancer.config import parse_settings
 from load_balancer.proxy import create_proxy_server
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.routing import RoundRobinPool
 
 
 def project_status() -> str:
@@ -10,17 +11,16 @@ def project_status() -> str:
 
 
 def main() -> None:
-    """Run a local proxy using the demonstration backend addresses."""
+    """Run the proxy using validated command-line settings."""
 
-    pool = RoundRobinPool(
-        [
-            Backend("backend-a", "http://127.0.0.1:9001"),
-            Backend("backend-b", "http://127.0.0.1:9002"),
-            Backend("backend-c", "http://127.0.0.1:9003"),
-        ]
+    settings = parse_settings()
+    pool = RoundRobinPool(list(settings.backends))
+    server = create_proxy_server(
+        (settings.listen_host, settings.listen_port),
+        pool,
     )
-    server = create_proxy_server(("127.0.0.1", 8080), pool)
-    print("Load balancer listening on http://127.0.0.1:8080")
+    host, port = server.server_address
+    print(f"Load balancer listening on http://{host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

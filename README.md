@@ -103,13 +103,19 @@ a runnable checkpoint before the next step begins.
 
 ## Current checkpoint
 
-The application now accepts HTTP `GET` and `POST` requests on `127.0.0.1:8080`,
-selects a healthy backend with the thread-safe round-robin pool, and forwards
-the path, query string, headers, and `POST` body to demonstration backends on
-ports 9001 through 9003. It preserves the backend status, end-to-end headers,
-and response body, returns `503` when the pool is exhausted, and returns `502`
-when a selected backend cannot be reached.
+The application accepts HTTP `GET` and `POST` requests and can now be configured
+without editing source code. With no arguments it listens on `127.0.0.1:8080`
+and uses demonstration backends on ports 9001 through 9003.
 
-This checkpoint still buffers request and response bodies in memory and does
-not retry requests. The next checkpoint will move the hardcoded listen and
-backend addresses into explicit runtime configuration.
+Custom addresses use repeatable `--backend` arguments:
+
+```shell
+load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
+  --backend api-a=http://10.0.0.1:9000 \
+  --backend api-b=http://10.0.0.2:9000
+```
+
+Configuration is validated before the server starts. This checkpoint still
+buffers request and response bodies in memory and does not retry requests. The
+next checkpoint will introduce active health checks so failed backends can be
+removed from and restored to the routing rotation automatically.
