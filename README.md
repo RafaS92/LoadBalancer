@@ -103,8 +103,13 @@ a runnable checkpoint before the next step begins.
 
 ## Current checkpoint
 
-The routing core now models named backends and selects healthy instances with a
-thread-safe round-robin pool. Unhealthy instances are skipped, recovered
-instances can rejoin the rotation, and an exhausted pool reports that no route
-is available. The next checkpoint is to place a minimal HTTP reverse-proxy
-handler in front of this routing contract.
+The application now accepts HTTP `GET` requests on `127.0.0.1:8080`, selects a
+healthy backend with the thread-safe round-robin pool, and forwards the path and
+query string to demonstration backends on ports 9001 through 9003. It preserves
+the backend status, end-to-end headers, and body, returns `503` when the pool is
+exhausted, and returns `502` when a selected backend cannot be reached.
+
+This checkpoint intentionally supports only `GET` and buffers each response in
+memory. The next checkpoint will add request-body forwarding for methods such as
+`POST` while keeping retry behavior out of scope until its safety rules are
+explicit.
