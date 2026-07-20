@@ -166,5 +166,13 @@ curl -X POST http://127.0.0.1:8080/admin/backends/backend-a/enable
 Disabled backends receive no new requests, but existing requests finish and
 health checks continue. A health recovery never overrides a disabled state.
 These unauthenticated actions are intended for local administration only. The
-next checkpoint will add graceful draining, which waits for active requests to
-reach zero before confirming maintenance readiness.
+graceful drain action makes maintenance readiness explicit:
+
+```shell
+curl -X POST http://127.0.0.1:8080/admin/backends/backend-a/drain
+```
+
+It stops new assignments immediately while existing requests finish. The
+response and backend snapshot report `drained: true` once `active_requests`
+reaches zero. The next checkpoint will add explicit upstream connection and
+response timeout configuration.

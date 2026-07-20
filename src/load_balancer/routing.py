@@ -26,6 +26,7 @@ class BackendStatus:
     backend: Backend
     healthy: bool
     enabled: bool
+    draining: bool
     active_requests: int
 
 
@@ -39,6 +40,8 @@ class BackendPool(Protocol):
     def set_health(self, name: str, *, healthy: bool) -> None: ...
 
     def set_enabled(self, name: str, *, enabled: bool) -> None: ...
+
+    def begin_drain(self, name: str) -> None: ...
 
     def snapshot(self) -> tuple[BackendStatus, ...]: ...
 
@@ -62,6 +65,7 @@ class RoundRobinPool:
         self._backends = tuple(backends)
         self._healthy = {backend.name: True for backend in backends}
         self._enabled = {backend.name: True for backend in backends}
+        self._draining = {backend.name: False for backend in backends}
         self._active_requests = {backend.name: 0 for backend in backends}
         self._next_index = 0
         self._lock = Lock()
@@ -106,6 +110,16 @@ class RoundRobinPool:
             if name not in self._enabled:
                 raise KeyError(f"unknown backend: {name}")
             self._enabled[name] = enabled
+            self._draining[name] = False
+
+    def begin_drain(self, name: str) -> None:
+        """Stop new assignments while existing requests finish."""
+
+        with self._lock:
+            if name not in self._enabled:
+                raise KeyError(f"unknown backend: {name}")
+            self._enabled[name] = False
+            self._draining[name] = True
 
     def snapshot(self) -> tuple[BackendStatus, ...]:
         """Return a consistent, read-only snapshot of all backend states."""
@@ -116,6 +130,7 @@ class RoundRobinPool:
                     backend,
                     self._healthy[backend.name],
                     self._enabled[backend.name],
+                    self._draining[backend.name],
                     self._active_requests[backend.name],
                 )
                 for backend in self._backends

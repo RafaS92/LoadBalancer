@@ -149,6 +149,8 @@ def test_admin_endpoint_returns_backend_snapshot() -> None:
                     "url": "http://127.0.0.1:9001",
                     "healthy": True,
                     "enabled": True,
+                    "draining": False,
+                    "drained": False,
                     "active_requests": 0,
                 },
                 {
@@ -156,6 +158,8 @@ def test_admin_endpoint_returns_backend_snapshot() -> None:
                     "url": "http://127.0.0.1:9002",
                     "healthy": False,
                     "enabled": True,
+                    "draining": False,
+                    "drained": False,
                     "active_requests": 0,
                 },
             ]
@@ -193,14 +197,25 @@ def test_admin_snapshot_shows_active_request_until_it_completes() -> None:
         request_thread.start()
         try:
             assert request_started.wait(timeout=1)
-            with urlopen(f"{proxy_url(proxy)}/admin/backends") as response:
-                assert json.load(response)[0]["active_requests"] == 1
+            drain_request = Request(
+                f"{proxy_url(proxy)}/admin/backends/backend-a/drain",
+                data=b"",
+                method="POST",
+            )
+            with urlopen(drain_request) as response:
+                draining = json.load(response)
+                assert draining["active_requests"] == 1
+                assert draining["draining"] is True
+                assert draining["drained"] is False
         finally:
             allow_response.set()
             request_thread.join()
 
         with urlopen(f"{proxy_url(proxy)}/admin/backends") as response:
-            assert json.load(response)[0]["active_requests"] == 0
+            drained = json.load(response)[0]
+            assert drained["active_requests"] == 0
+            assert drained["draining"] is True
+            assert drained["drained"] is True
 
     assert errors == []
 

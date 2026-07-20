@@ -70,8 +70,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         backend_action = self._parse_backend_action()
         if backend_action is not None:
-            name, enabled = backend_action
-            self._set_backend_enabled(name, enabled=enabled)
+            name, action = backend_action
+            self._apply_backend_action(name, action)
             return
 
         if urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}:
@@ -160,6 +160,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     "url": status.backend.url,
                     "healthy": status.healthy,
                     "enabled": status.enabled,
+                    "draining": status.draining,
+                    "drained": status.draining and status.active_requests == 0,
                     "active_requests": status.active_requests,
                 }
                 for status in self.pool.snapshot()
@@ -167,24 +169,27 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         ).encode()
         self._send_body(200, body, content_type="application/json")
 
-    def _parse_backend_action(self) -> tuple[str, bool] | None:
-        """Parse /admin/backends/{name}/enable or disable."""
+    def _parse_backend_action(self) -> tuple[str, str] | None:
+        """Parse an enable, disable, or drain backend action."""
 
         parts = urlsplit(self.path).path.split("/")
         if (
             len(parts) != 5
             or parts[:3] != ["", "admin", "backends"]
             or not parts[3]
-            or parts[4] not in {"enable", "disable"}
+            or parts[4] not in {"enable", "disable", "drain"}
         ):
             return None
-        return unquote(parts[3]), parts[4] == "enable"
+        return unquote(parts[3]), parts[4]
 
-    def _set_backend_enabled(self, name: str, *, enabled: bool) -> None:
+    def _apply_backend_action(self, name: str, action: str) -> None:
         """Apply one operator routing action and return the resulting state."""
 
         try:
-            self.pool.set_enabled(name, enabled=enabled)
+            if action == "drain":
+                self.pool.begin_drain(name)
+            else:
+                self.pool.set_enabled(name, enabled=action == "enable")
         except KeyError:
             self._send_body(404, b"Unknown backend\n")
             return
@@ -197,6 +202,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 "name": status.backend.name,
                 "healthy": status.healthy,
                 "enabled": status.enabled,
+                "draining": status.draining,
+                "drained": status.draining and status.active_requests == 0,
                 "active_requests": status.active_requests,
             }
         ).encode()
@@ -206,7 +213,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 {
                     "event": "backend_operator_state_changed",
                     "backend": name,
-                    "enabled": enabled,
+                    "action": action,
+                    "enabled": status.enabled,
+                    "draining": status.draining,
                 },
                 separators=(",", ":"),
             )

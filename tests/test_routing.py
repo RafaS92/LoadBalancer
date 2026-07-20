@@ -93,6 +93,7 @@ def test_snapshot_is_consistent_and_ordered(backends: list[Backend]) -> None:
     assert [status.backend for status in snapshot] == backends
     assert [status.healthy for status in snapshot] == [True, False, True]
     assert [status.enabled for status in snapshot] == [True, True, True]
+    assert [status.draining for status in snapshot] == [False, False, False]
     assert [status.active_requests for status in snapshot] == [0, 0, 0]
 
 
@@ -135,6 +136,25 @@ def test_disabled_backend_stays_out_of_rotation_after_health_recovery(
     pool.set_health("backend-b", healthy=True)
     assert pool.snapshot()[1].enabled is False
     assert [pool.choose() for _ in range(2)] == [backends[0], backends[2]]
+
+
+def test_drain_stops_new_assignments_until_backend_is_enabled(
+    backends: list[Backend],
+) -> None:
+    pool = RoundRobinPool(backends)
+    assert pool.acquire() == backends[0]
+
+    pool.begin_drain("backend-a")
+    draining_status = pool.snapshot()[0]
+    assert draining_status.enabled is False
+    assert draining_status.draining is True
+    assert draining_status.active_requests == 1
+    assert pool.acquire() == backends[1]
+
+    pool.release("backend-a")
+    assert pool.snapshot()[0].active_requests == 0
+    pool.set_enabled("backend-a", enabled=True)
+    assert pool.snapshot()[0].draining is False
 
 
 def test_least_connections_selects_the_least_busy_backend(
