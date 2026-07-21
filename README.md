@@ -126,6 +126,21 @@ load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --health-success-threshold 2
 ```
 
+The repository also includes an identifiable backend executable for local
+demonstrations. Run three instances in separate terminals:
+
+```shell
+demo-backend --name backend-a --port 9001
+demo-backend --name backend-b --port 9002
+demo-backend --name backend-c --port 9003
+```
+
+Each instance exposes `GET /health` and returns its backend name, request method,
+path, request ID, and forwarded client context as JSON for application requests.
+`POST` and `DELETE` bodies are echoed within a 1 MiB safety limit. The same
+settings can be provided with `BACKEND_NAME`, `BACKEND_HOST`, `BACKEND_PORT`, and
+`BACKEND_MAX_BODY_BYTES`, preparing the executable for containerized services.
+
 Configuration is validated before the server starts. A background health
 checker uses HTTPX to request `/health` from every backend immediately at
 startup and every two seconds afterward. Only `2xx` responses are healthy;
