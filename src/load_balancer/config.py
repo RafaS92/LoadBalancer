@@ -26,6 +26,7 @@ class Settings:
     upstream_response_timeout: float
     max_retries: int
     max_request_body_bytes: int
+    max_response_body_bytes: int
     backends: tuple[Backend, ...]
     health_path: str
     health_interval: float
@@ -146,6 +147,12 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         default=1_048_576,
         help="maximum accepted request body size in bytes",
     )
+    parser.add_argument(
+        "--max-response-body-bytes",
+        type=positive_integer_argument,
+        default=1_048_576,
+        help="maximum buffered backend response body size in bytes",
+    )
     parser.add_argument("--health-path", type=health_path_argument, default="/health")
     parser.add_argument(
         "--health-interval",
@@ -190,6 +197,7 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         upstream_response_timeout=parsed.upstream_response_timeout,
         max_retries=parsed.max_retries,
         max_request_body_bytes=parsed.max_request_body_bytes,
+        max_response_body_bytes=parsed.max_response_body_bytes,
         backends=backends,
         health_path=parsed.health_path,
         health_interval=parsed.health_interval,

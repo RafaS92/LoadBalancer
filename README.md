@@ -103,9 +103,9 @@ a runnable checkpoint before the next step begins.
 
 ## Current checkpoint
 
-The application accepts HTTP `GET` and `POST` requests and can now be configured
-without editing source code. With no arguments it listens on `127.0.0.1:8080`
-and uses demonstration backends on ports 9001 through 9003.
+The application accepts HTTP `GET`, `POST`, and `DELETE` requests and can be
+configured without editing source code. With no arguments it listens on
+`127.0.0.1:8080` and uses demonstration backends on ports 9001 through 9003.
 
 Custom addresses use repeatable `--backend` arguments:
 
@@ -116,6 +116,7 @@ load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --upstream-response-timeout 5 \
   --max-retries 1 \
   --max-request-body-bytes 1048576 \
+  --max-response-body-bytes 1048576 \
   --backend api-a=http://10.0.0.1:9000 \
   --backend api-b=http://10.0.0.2:9000 \
   --health-path /ready \
@@ -141,7 +142,8 @@ curl http://127.0.0.1:8080/admin/backends
 It returns each backend's name, URL, and current health as JSON without changing
 the routing sequence. The endpoint is currently unauthenticated and shares the
 traffic listener, so it should not be exposed publicly. This checkpoint still
-performs probes sequentially and buffers request and response bodies in memory.
+performs probes sequentially and buffers request and response bodies in memory
+within configured limits.
 Each completed proxy request writes one JSON log event containing its method,
 path, selected backend, status, outcome, and duration. Request headers and
 bodies are intentionally excluded to avoid leaking sensitive data.
@@ -200,5 +202,15 @@ limited to 1 MiB by default and the limit can be configured with
 `--max-request-body-bytes`. A declared body above the limit is rejected with
 `413 Payload Too Large` before a backend is selected or the body is buffered.
 The connection is then closed so unread request bytes cannot be interpreted as
-a subsequent request. The next checkpoint will extend method support while
-preserving the same forwarding and safety rules.
+a subsequent request. `DELETE` shares that bounded-body path, preserves request
+headers and bodies, and is never retried. It also cannot reach the local
+administration or metrics endpoints, which remain read-only except for the
+explicit backend actions handled by `POST`. Backend responses are limited to
+1 MiB by default and configurable with `--max-response-body-bytes`. The proxy
+reads at most one byte beyond the limit, closes the upstream connection, and
+returns a controlled `502` without exposing a partial response to the client.
+The proxy accepts only unambiguous `Content-Length` request framing. Requests
+using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are
+rejected and disconnected before backend selection, preventing unread bytes
+from desynchronizing the persistent HTTP connection. The next checkpoint will
+run independent backend health probes concurrently.

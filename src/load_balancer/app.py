@@ -37,6 +37,7 @@ def main() -> None:
         upstream_response_timeout=settings.upstream_response_timeout,
         max_retries=settings.max_retries,
         max_request_body_bytes=settings.max_request_body_bytes,
+        max_response_body_bytes=settings.max_response_body_bytes,
         metrics=metrics,
     )
     host, port = server.server_address

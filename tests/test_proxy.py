@@ -1,6 +1,7 @@
 import json
 import logging
 from contextlib import contextmanager
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
 from typing import Iterator
@@ -54,6 +55,8 @@ def backend_server(name: str) -> ThreadingHTTPServer:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        do_DELETE = do_POST
 
         def log_message(self, format: str, *args: object) -> None:
             pass
@@ -509,7 +512,9 @@ def test_get_retries_different_backend_after_connect_timeout(
     assert 'reason="backend_connect_timeout"' in metrics
 
 
-def test_post_is_not_retried_after_connect_timeout(
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+def test_mutating_methods_are_not_retried_after_connect_timeout(
+    method: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -544,7 +549,7 @@ def test_post_is_not_retried_after_connect_timeout(
         f"{proxy_url(proxy)}/orders",
         data=b'{"item":"book"}',
         headers={"Content-Type": "application/json"},
-        method="POST",
+        method=method,
     )
 
     with (
@@ -557,7 +562,7 @@ def test_post_is_not_retried_after_connect_timeout(
         except HTTPError as error:
             assert error.code == 502
         else:
-            raise AssertionError("expected POST connection timeout to return 502")
+            raise AssertionError(f"expected {method} connection timeout to return 502")
 
     event = json.loads(caplog.records[-1].message)
     assert event["backend"] == "backend-a"
@@ -643,6 +648,212 @@ def test_accepts_post_body_at_configured_limit() -> None:
 
     assert status == 201
     assert payload["body"] == "12345"
+
+
+def test_forwards_delete_body() -> None:
+    upstream = backend_server("backend-a")
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    request = Request(
+        f"{proxy_url(proxy)}/items/42",
+        data=b'{"name":"updated"}',
+        headers={"Content-Type": "application/json"},
+        method="DELETE",
+    )
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(request) as response:
+            payload = json.load(response)
+
+    assert response.status == 201
+    assert payload == {
+        "backend": "backend-a",
+        "path": "/items/42",
+        "content_type": "application/json",
+        "body": '{"name":"updated"}',
+    }
+
+
+def test_delete_cannot_reach_internal_endpoints() -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    request = Request(
+        f"{proxy_url(proxy)}/metrics",
+        data=b"",
+        method="DELETE",
+    )
+
+    with running_server(proxy):
+        with pytest.raises(HTTPError) as raised:
+            urlopen(request)
+
+    assert raised.value.code == 405
+    assert pool.snapshot()[0].active_requests == 0
+
+
+def test_request_body_limit_applies_to_delete() -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(
+        ("127.0.0.1", 0),
+        pool,
+        max_request_body_bytes=4,
+    )
+    request = Request(
+        f"{proxy_url(proxy)}/items/42",
+        data=b"12345",
+        method="DELETE",
+    )
+
+    with running_server(proxy):
+        with pytest.raises(HTTPError) as raised:
+            urlopen(request)
+
+    assert raised.value.code == 413
+    assert pool.snapshot()[0].active_requests == 0
+
+
+def test_rejects_backend_response_larger_than_configured_limit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class LargeResponseBackend(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = b"12345"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), LargeResponseBackend)
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(
+        ("127.0.0.1", 0),
+        pool,
+        max_response_body_bytes=4,
+    )
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(upstream),
+        running_server(proxy),
+    ):
+        with pytest.raises(HTTPError) as raised:
+            urlopen(f"{proxy_url(proxy)}/large")
+
+        assert raised.value.code == 502
+        assert raised.value.read() == b"Selected backend could not be reached\n"
+
+    assert pool.snapshot()[0].active_requests == 0
+    event = json.loads(caplog.records[-1].message)
+    assert event["status"] == 502
+    assert event["backend"] == "backend-a"
+    assert event["outcome"] == "backend_response_too_large"
+
+
+def test_accepts_backend_response_at_configured_limit() -> None:
+    class BoundedResponseBackend(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = b"12345"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), BoundedResponseBackend)
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(
+        ("127.0.0.1", 0),
+        pool,
+        max_response_body_bytes=5,
+    )
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(f"{proxy_url(proxy)}/bounded") as response:
+            body = response.read()
+            status = response.status
+
+    assert status == 200
+    assert body == b"12345"
+
+
+def test_rejects_chunked_request_framing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    host, port = proxy.server_address
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(proxy),
+    ):
+        connection = HTTPConnection(host, port)
+        try:
+            connection.request(
+                "POST",
+                "/orders",
+                body=iter([b"payload"]),
+                encode_chunked=True,
+            )
+            response = connection.getresponse()
+            assert response.status == 501
+            assert response.read() == b"Transfer-Encoding is not supported\n"
+        finally:
+            connection.close()
+
+    assert pool.snapshot()[0].active_requests == 0
+    event = json.loads(caplog.records[-1].message)
+    assert event["outcome"] == "unsupported_transfer_encoding"
+
+
+def test_rejects_multiple_content_length_headers() -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    host, port = proxy.server_address
+
+    with running_server(proxy):
+        connection = HTTPConnection(host, port)
+        try:
+            connection.putrequest("POST", "/orders")
+            connection.putheader("Content-Length", "3")
+            connection.putheader("Content-Length", "4")
+            connection.endheaders(b"abc")
+            response = connection.getresponse()
+            assert response.status == 400
+            assert (
+                response.read()
+                == b"Multiple Content-Length headers are not supported\n"
+            )
+        finally:
+            connection.close()
+
+    assert pool.snapshot()[0].active_requests == 0
+
+
+def test_rejects_get_request_body() -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    host, port = proxy.server_address
+
+    with running_server(proxy):
+        connection = HTTPConnection(host, port)
+        try:
+            connection.request("GET", "/items", body=b"payload")
+            response = connection.getresponse()
+            assert response.status == 400
+            assert (
+                response.read()
+                == b"Request body is not supported for this method\n"
+            )
+        finally:
+            connection.close()
+
+    assert pool.snapshot()[0].active_requests == 0
 
 
 def test_returns_503_when_no_backend_is_healthy(

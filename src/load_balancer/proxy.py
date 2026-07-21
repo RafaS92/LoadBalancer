@@ -58,10 +58,13 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     upstream_response_timeout = 2.0
     max_retries = 1
     max_request_body_bytes = 1_048_576
+    max_response_body_bytes = 1_048_576
 
     def do_GET(self) -> None:
         """Forward one GET request or return a controlled gateway error."""
 
+        if self._content_length("GET", allow_body=False) is None:
+            return
         if urlsplit(self.path).path == ADMIN_BACKENDS_PATH:
             self._send_backend_snapshot()
             return
@@ -77,48 +80,136 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         """Read and forward one POST request body."""
 
-        raw_length = self.headers.get("Content-Length", "0")
-        try:
-            content_length = int(raw_length)
-        except ValueError:
-            self._send_body(400, b"Invalid Content-Length header\n")
+        body = self._read_request_body("POST")
+        if body is None:
             return
 
-        if content_length < 0:
-            self._send_body(400, b"Invalid Content-Length header\n")
-            return
-
-        if content_length > self.max_request_body_bytes:
-            request_id = self._request_id()
-            started_at = perf_counter()
-            self.close_connection = True
-            self._send_body(
-                413,
-                b"Request body exceeds configured limit\n",
-                request_id=request_id,
-            )
-            self._record_completion(
-                "POST",
-                413,
-                None,
-                "request_body_too_large",
-                started_at,
-                request_id,
-            )
-            return
-
-        body = self.rfile.read(content_length)
         backend_action = self._parse_backend_action()
         if backend_action is not None:
             name, action = backend_action
             self._apply_backend_action(name, action)
             return
 
-        if urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}:
+        if self._is_internal_path():
             self._send_body(405, b"Internal endpoint is read-only\n")
             return
 
         self._proxy_request("POST", body)
+
+    def do_DELETE(self) -> None:
+        """Forward one bounded DELETE request body."""
+
+        self._proxy_body_request("DELETE")
+
+    def _proxy_body_request(self, method: str) -> None:
+        """Read and proxy a bounded request unless its path is internal."""
+
+        body = self._read_request_body(method)
+        if body is None:
+            return
+        if self._is_internal_path():
+            self._send_body(405, b"Internal endpoint is read-only\n")
+            return
+        self._proxy_request(method, body)
+
+    def _read_request_body(self, method: str) -> bytes | None:
+        """Read a declared body within the configured memory bound."""
+
+        content_length = self._content_length(method, allow_body=True)
+        if content_length is None:
+            return None
+
+        if content_length > self.max_request_body_bytes:
+            self._reject_request(
+                method,
+                413,
+                b"Request body exceeds configured limit\n",
+                "request_body_too_large",
+            )
+            return None
+
+        return self.rfile.read(content_length)
+
+    def _content_length(self, method: str, *, allow_body: bool) -> int | None:
+        """Validate supported HTTP/1.1 request framing and return its length."""
+
+        if self.headers.get("Transfer-Encoding") is not None:
+            self._reject_request(
+                method,
+                501,
+                b"Transfer-Encoding is not supported\n",
+                "unsupported_transfer_encoding",
+            )
+            return None
+
+        raw_lengths = self.headers.get_all("Content-Length", [])
+        if len(raw_lengths) > 1:
+            self._reject_request(
+                method,
+                400,
+                b"Multiple Content-Length headers are not supported\n",
+                "ambiguous_content_length",
+            )
+            return None
+
+        raw_length = raw_lengths[0] if raw_lengths else "0"
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._reject_request(
+                method,
+                400,
+                b"Invalid Content-Length header\n",
+                "invalid_content_length",
+            )
+            return None
+
+        if content_length < 0:
+            self._reject_request(
+                method,
+                400,
+                b"Invalid Content-Length header\n",
+                "invalid_content_length",
+            )
+            return None
+
+        if not allow_body and content_length > 0:
+            self._reject_request(
+                method,
+                400,
+                b"Request body is not supported for this method\n",
+                "unsupported_request_body",
+            )
+            return None
+
+        return content_length
+
+    def _reject_request(
+        self,
+        method: str,
+        status: int,
+        body: bytes,
+        outcome: str,
+    ) -> None:
+        """Reject unsafe request framing and close without reading more bytes."""
+
+        request_id = self._request_id()
+        started_at = perf_counter()
+        self.close_connection = True
+        self._send_body(status, body, request_id=request_id)
+        self._record_completion(
+            method,
+            status,
+            None,
+            outcome,
+            started_at,
+            request_id,
+        )
+
+    def _is_internal_path(self) -> bool:
+        """Return whether the current target belongs to the local control plane."""
+
+        return urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}
 
     def _proxy_request(self, method: str, body: bytes | None = None) -> None:
         """Select a backend and relay one supported HTTP request."""
@@ -273,8 +364,15 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             try:
                 connection.request(method, self.path, body=body, headers=headers)
                 response = connection.getresponse()
-                body = response.read()
-                return response.status, response.reason, response.getheaders(), body
+                response_body = response.read(self.max_response_body_bytes + 1)
+                if len(response_body) > self.max_response_body_bytes:
+                    raise UpstreamFailure("backend_response_too_large")
+                return (
+                    response.status,
+                    response.reason,
+                    response.getheaders(),
+                    response_body,
+                )
             except TimeoutError as error:
                 raise UpstreamFailure("backend_response_timeout") from error
             except (OSError, HTTPException) as error:
@@ -427,6 +525,7 @@ def create_proxy_server(
     upstream_response_timeout: float = 2.0,
     max_retries: int = 1,
     max_request_body_bytes: int = 1_048_576,
+    max_response_body_bytes: int = 1_048_576,
     metrics: LoadBalancerMetrics | None = None,
 ) -> ThreadingHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
@@ -441,6 +540,7 @@ def create_proxy_server(
             "upstream_response_timeout": upstream_response_timeout,
             "max_retries": max_retries,
             "max_request_body_bytes": max_request_body_bytes,
+            "max_response_body_bytes": max_response_body_bytes,
         },
     )
     return ThreadingHTTPServer(address, handler_class)
