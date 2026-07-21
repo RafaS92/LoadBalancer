@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from http.client import HTTPConnection, HTTPException
+from http.client import HTTPConnection, HTTPException, HTTPResponse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import perf_counter
 from urllib.parse import unquote, urlsplit
@@ -38,6 +38,7 @@ ADMIN_LOGGER = logging.getLogger("load_balancer.admin")
 RETRYABLE_METHODS = {"GET"}
 RETRYABLE_OUTCOMES = {"backend_connect_timeout", "backend_connection_failed"}
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+RESPONSE_CHUNK_SIZE = 64 * 1024
 
 
 class UpstreamFailure(Exception):
@@ -281,8 +282,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             attempted_backends.add(backend.name)
             try:
                 try:
-                    status, reason, headers, response_body = self._forward(
-                        method, backend, body, request_id
+                    status, delivery_outcome = self._forward(
+                        method,
+                        backend,
+                        body,
+                        request_id,
                     )
                 except UpstreamFailure as failure:
                     can_retry = (
@@ -310,18 +314,23 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                if not self._send_upstream_response(
-                    status,
-                    reason,
-                    headers,
-                    response_body,
-                    request_id,
-                ):
+                if delivery_outcome == "client_disconnected":
                     self._record_client_disconnect(
                         method,
                         backend=backend,
                         started_at=started_at,
                         request_id=request_id,
+                    )
+                    return
+                if delivery_outcome is not None:
+                    self.close_connection = True
+                    self._record_completion(
+                        method,
+                        502,
+                        backend,
+                        delivery_outcome,
+                        started_at,
+                        request_id,
                     )
                     return
                 outcome = "completed_after_retry" if attempt > 0 else "completed"
@@ -337,15 +346,15 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             finally:
                 self.pool.release(backend.name)
 
-    def _send_upstream_response(
+    def _send_upstream_headers(
         self,
         status: int,
         reason: str,
         headers: list[tuple[str, str]],
-        body: bytes,
+        content_length: int,
         request_id: str,
     ) -> bool:
-        """Send one backend response, returning false if the client disconnected."""
+        """Send filtered response headers with explicit downstream framing."""
 
         try:
             self.send_response(status, reason)
@@ -356,9 +365,18 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     and lowered not in {"content-length", "x-request-id"}
                 ):
                     self.send_header(name, value)
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(content_length))
             self.send_header("X-Request-Id", request_id)
             self.end_headers()
+        except ConnectionError:
+            self.close_connection = True
+            return False
+        return True
+
+    def _write_response_body(self, body: bytes) -> bool:
+        """Write response bytes unless the downstream client has disconnected."""
+
+        try:
             self.wfile.write(body)
         except ConnectionError:
             self.close_connection = True
@@ -391,8 +409,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         backend: Backend,
         body: bytes | None,
         request_id: str,
-    ) -> tuple[int, str, list[tuple[str, str]], bytes]:
-        """Send the current request to one backend."""
+    ) -> tuple[int, str | None]:
+        """Send a request upstream and relay its bounded response."""
 
         target = urlsplit(backend.url)
         if target.scheme != "http" or target.hostname is None:
@@ -433,21 +451,94 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             try:
                 connection.request(method, self.path, body=body, headers=headers)
                 response = connection.getresponse()
-                response_body = response.read(self.max_response_body_bytes + 1)
-                if len(response_body) > self.max_response_body_bytes:
-                    raise UpstreamFailure("backend_response_too_large")
-                return (
-                    response.status,
-                    response.reason,
-                    response.getheaders(),
-                    response_body,
-                )
+                return self._relay_upstream_response(response, request_id)
             except TimeoutError as error:
                 raise UpstreamFailure("backend_response_timeout") from error
             except (OSError, HTTPException) as error:
                 raise UpstreamFailure("backend_response_failed") from error
         finally:
             connection.close()
+
+    def _relay_upstream_response(
+        self,
+        response: HTTPResponse,
+        request_id: str,
+    ) -> tuple[int, str | None]:
+        """Stream framed responses and safely buffer responses without a length."""
+
+        status = response.status
+        reason = response.reason
+        headers = response.getheaders()
+        has_no_body = 100 <= status < 200 or status in {204, 304}
+        if has_no_body:
+            content_length = 0
+        elif response.chunked:
+            content_length = None
+        else:
+            content_length = self._response_content_length(headers)
+
+        if content_length is None:
+            response_body = response.read(self.max_response_body_bytes + 1)
+            if len(response_body) > self.max_response_body_bytes:
+                raise UpstreamFailure("backend_response_too_large")
+            if not self._send_upstream_headers(
+                status,
+                reason,
+                headers,
+                len(response_body),
+                request_id,
+            ):
+                return status, "client_disconnected"
+            if not self._write_response_body(response_body):
+                return status, "client_disconnected"
+            return status, None
+
+        if content_length > self.max_response_body_bytes:
+            raise UpstreamFailure("backend_response_too_large")
+        if not self._send_upstream_headers(
+            status,
+            reason,
+            headers,
+            content_length,
+            request_id,
+        ):
+            return status, "client_disconnected"
+
+        remaining = content_length
+        while remaining:
+            try:
+                chunk = response.read1(min(RESPONSE_CHUNK_SIZE, remaining))
+            except TimeoutError:
+                return status, "backend_response_timeout"
+            except (OSError, HTTPException):
+                return status, "backend_response_failed"
+            if not chunk:
+                return status, "backend_response_failed"
+            if not self._write_response_body(chunk):
+                return status, "client_disconnected"
+            remaining -= len(chunk)
+        return status, None
+
+    @staticmethod
+    def _response_content_length(headers: list[tuple[str, str]]) -> int | None:
+        """Return one valid backend Content-Length or reject ambiguous framing."""
+
+        values = [
+            value
+            for name, value in headers
+            if name.lower() == "content-length"
+        ]
+        if not values:
+            return None
+        if len(values) > 1:
+            raise UpstreamFailure("backend_response_failed")
+        try:
+            content_length = int(values[0])
+        except ValueError as error:
+            raise UpstreamFailure("backend_response_failed") from error
+        if content_length < 0:
+            raise UpstreamFailure("backend_response_failed")
+        return content_length
 
     def _send_backend_snapshot(self) -> None:
         """Return the current backend state without changing routing."""

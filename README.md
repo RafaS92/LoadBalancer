@@ -143,8 +143,8 @@ It returns each backend's name, URL, and current health as JSON without changing
 the routing sequence. The endpoint is currently unauthenticated and shares the
 traffic listener, so it should not be exposed publicly. Health probes for
 independent backends run concurrently, so one slow probe does not delay probes
-to the remaining backends. Request and response bodies are buffered in memory
-within configured limits.
+to the remaining backends. Request bodies remain buffered within their limit;
+framed backend responses are streamed in bounded chunks.
 Each completed proxy request writes one JSON log event containing its method,
 path, selected backend, status, outcome, and duration. Request headers and
 bodies are intentionally excluded to avoid leaking sensitive data.
@@ -207,15 +207,16 @@ a subsequent request. `DELETE` shares that bounded-body path, preserves request
 headers and bodies, and is never retried. It also cannot reach the local
 administration or metrics endpoints, which remain read-only except for the
 explicit backend actions handled by `POST`. Backend responses are limited to
-1 MiB by default and configurable with `--max-response-body-bytes`. The proxy
-reads at most one byte beyond the limit, closes the upstream connection, and
-returns a controlled `502` without exposing a partial response to the client.
+1 MiB by default and configurable with `--max-response-body-bytes`. Responses
+with a valid `Content-Length` are rejected before delivery when declared above
+the limit and otherwise streamed in 64 KiB chunks. Responses without a usable
+length remain bounded-buffered so the proxy can calculate safe downstream
+framing before sending headers.
 The proxy accepts only unambiguous `Content-Length` request framing. Requests
 using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are
 rejected and disconnected before backend selection, preventing unread bytes
-from desynchronizing the persistent HTTP connection. The next checkpoint will
-stream bounded backend responses instead of buffering them completely. Process
-shutdown is coordinated for both `SIGINT` and `SIGTERM`: the listener stops
+from desynchronizing the persistent HTTP connection. Process shutdown is
+coordinated for both `SIGINT` and `SIGTERM`: the listener stops
 accepting new traffic, the server waits for active request threads, the health
 checker is stopped, and signal handlers are restored before exit. Client
 disconnects during response delivery are suppressed as expected network events,

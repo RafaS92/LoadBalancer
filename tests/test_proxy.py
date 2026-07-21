@@ -441,16 +441,16 @@ def test_client_disconnect_releases_backend_and_records_outcome(
         status: int,
         reason: str,
         headers: list[tuple[str, str]],
-        body: bytes,
+        content_length: int,
         request_id: str,
     ) -> bool:
-        del status, reason, headers, body, request_id
+        del status, reason, headers, content_length, request_id
         self.close_connection = True
         return False
 
     monkeypatch.setattr(
         ProxyRequestHandler,
-        "_send_upstream_response",
+        "_send_upstream_headers",
         simulate_disconnect,
     )
     proxy = create_proxy_server(("127.0.0.1", 0), pool)
@@ -490,13 +490,9 @@ def test_upstream_response_writer_suppresses_broken_pipe() -> None:
             pass
 
     handler = HandlerHarness()
-    sent = ProxyRequestHandler._send_upstream_response(
+    sent = ProxyRequestHandler._write_response_body(
         handler,  # type: ignore[arg-type]
-        200,
-        "OK",
-        [],
         b"response",
-        "request-123",
     )
 
     assert sent is False
@@ -891,6 +887,43 @@ def test_accepts_backend_response_at_configured_limit() -> None:
 
     assert status == 200
     assert body == b"12345"
+
+
+def test_streams_framed_response_before_backend_finishes() -> None:
+    first_chunk_sent = Event()
+    allow_final_chunk = Event()
+
+    class StreamingBackend(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", "6")
+            self.end_headers()
+            self.wfile.write(b"abc")
+            self.wfile.flush()
+            first_chunk_sent.set()
+            allow_final_chunk.wait(timeout=2)
+            self.wfile.write(b"def")
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), StreamingBackend)
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    host, port = proxy.server_address
+
+    with running_server(upstream), running_server(proxy):
+        connection = HTTPConnection(host, port, timeout=1)
+        try:
+            connection.request("GET", "/stream")
+            assert first_chunk_sent.wait(timeout=1)
+            response = connection.getresponse()
+            assert response.read(3) == b"abc"
+            allow_final_chunk.set()
+            assert response.read() == b"def"
+        finally:
+            allow_final_chunk.set()
+            connection.close()
 
 
 def test_rejects_chunked_request_framing(

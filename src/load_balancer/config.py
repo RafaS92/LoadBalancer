@@ -151,7 +151,7 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         "--max-response-body-bytes",
         type=positive_integer_argument,
         default=1_048_576,
-        help="maximum buffered backend response body size in bytes",
+        help="maximum backend response body size in bytes",
     )
     parser.add_argument("--health-path", type=health_path_argument, default="/health")
     parser.add_argument(
