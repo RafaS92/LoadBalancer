@@ -109,6 +109,14 @@ def test_forwards_path_and_query_and_preserves_response(
     assert event["duration_ms"] >= 0
 
 
+def test_proxy_server_waits_for_active_request_threads() -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    assert proxy.daemon_threads is False
+    assert proxy.block_on_close is True
+
+
 def test_forwards_trusted_client_identity_headers() -> None:
     class HeaderBackend(BaseHTTPRequestHandler):
         def do_GET(self) -> None:

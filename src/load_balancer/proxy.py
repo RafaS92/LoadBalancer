@@ -48,6 +48,12 @@ class UpstreamFailure(Exception):
         self.outcome = outcome
 
 
+class ProxyHTTPServer(ThreadingHTTPServer):
+    """Threaded HTTP server that waits for active requests during close."""
+
+    daemon_threads = False
+
+
 class ProxyRequestHandler(BaseHTTPRequestHandler):
     """Forward supported HTTP requests to backends selected by a shared pool."""
 
@@ -527,7 +533,7 @@ def create_proxy_server(
     max_request_body_bytes: int = 1_048_576,
     max_response_body_bytes: int = 1_048_576,
     metrics: LoadBalancerMetrics | None = None,
-) -> ThreadingHTTPServer:
+) -> ProxyHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
 
     handler_class = type(
@@ -543,4 +549,4 @@ def create_proxy_server(
             "max_response_body_bytes": max_response_body_bytes,
         },
     )
-    return ThreadingHTTPServer(address, handler_class)
+    return ProxyHTTPServer(address, handler_class)
