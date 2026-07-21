@@ -33,7 +33,7 @@ class BackendStatus:
 class BackendPool(Protocol):
     """Operations required by proxying and health-checking components."""
 
-    def acquire(self) -> Backend | None: ...
+    def acquire(self, *, exclude: set[str] | None = None) -> Backend | None: ...
 
     def release(self, name: str) -> None: ...
 
@@ -76,11 +76,11 @@ class RoundRobinPool:
         with self._lock:
             return self._choose_healthy_backend()
 
-    def acquire(self) -> Backend | None:
+    def acquire(self, *, exclude: set[str] | None = None) -> Backend | None:
         """Select a healthy backend and increment its active-request count."""
 
         with self._lock:
-            backend = self._choose_healthy_backend()
+            backend = self._choose_healthy_backend(exclude)
             if backend is not None:
                 self._active_requests[backend.name] += 1
             return backend
@@ -136,31 +136,43 @@ class RoundRobinPool:
                 for backend in self._backends
             )
 
-    def _choose_healthy_backend(self) -> Backend | None:
+    def _choose_healthy_backend(
+        self, exclude: set[str] | None = None
+    ) -> Backend | None:
         """Choose the next healthy backend while the caller holds the lock."""
 
         for offset in range(len(self._backends)):
             index = (self._next_index + offset) % len(self._backends)
             backend = self._backends[index]
-            if self._is_eligible(backend):
+            if self._is_eligible(backend, exclude):
                 self._next_index = (index + 1) % len(self._backends)
                 return backend
         return None
 
-    def _is_eligible(self, backend: Backend) -> bool:
+    def _is_eligible(
+        self, backend: Backend, exclude: set[str] | None = None
+    ) -> bool:
         """Return whether health and operator state allow new requests."""
 
-        return self._healthy[backend.name] and self._enabled[backend.name]
+        return (
+            self._healthy[backend.name]
+            and self._enabled[backend.name]
+            and (exclude is None or backend.name not in exclude)
+        )
 
 
 class LeastConnectionsPool(RoundRobinPool):
     """Select the healthy backend handling the fewest active requests."""
 
-    def _choose_healthy_backend(self) -> Backend | None:
+    def _choose_healthy_backend(
+        self, exclude: set[str] | None = None
+    ) -> Backend | None:
         """Choose the least busy backend, using round-robin to break ties."""
 
         eligible_backends = [
-            backend for backend in self._backends if self._is_eligible(backend)
+            backend
+            for backend in self._backends
+            if self._is_eligible(backend, exclude)
         ]
         if not eligible_backends:
             return None
@@ -172,7 +184,7 @@ class LeastConnectionsPool(RoundRobinPool):
             index = (self._next_index + offset) % len(self._backends)
             backend = self._backends[index]
             if (
-                self._is_eligible(backend)
+                self._is_eligible(backend, exclude)
                 and self._active_requests[backend.name] == fewest_requests
             ):
                 self._next_index = (index + 1) % len(self._backends)

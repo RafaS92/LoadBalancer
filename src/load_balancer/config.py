@@ -22,6 +22,9 @@ class Settings:
 
     listen_host: str
     listen_port: int
+    upstream_connect_timeout: float
+    upstream_response_timeout: float
+    max_retries: int
     backends: tuple[Backend, ...]
     health_path: str
     health_interval: float
@@ -87,6 +90,18 @@ def positive_integer_argument(value: str) -> int:
     return number
 
 
+def non_negative_integer_argument(value: str) -> int:
+    """Parse a whole number that may be zero."""
+
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("value must be an integer") from error
+    if number < 0:
+        raise argparse.ArgumentTypeError("value must be zero or greater")
+    return number
+
+
 def health_path_argument(value: str) -> str:
     """Parse an absolute HTTP path used for backend probes."""
 
@@ -105,6 +120,24 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         "--strategy",
         choices=("round-robin", "least-connections"),
         default="round-robin",
+    )
+    parser.add_argument(
+        "--upstream-connect-timeout",
+        type=positive_float_argument,
+        default=2.0,
+        help="maximum seconds to establish a backend connection",
+    )
+    parser.add_argument(
+        "--upstream-response-timeout",
+        type=positive_float_argument,
+        default=2.0,
+        help="maximum seconds to wait on a connected backend",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=non_negative_integer_argument,
+        default=1,
+        help="additional connection attempts allowed for safe requests",
     )
     parser.add_argument("--health-path", type=health_path_argument, default="/health")
     parser.add_argument(
@@ -146,6 +179,9 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
     return Settings(
         listen_host=parsed.listen_host,
         listen_port=parsed.listen_port,
+        upstream_connect_timeout=parsed.upstream_connect_timeout,
+        upstream_response_timeout=parsed.upstream_response_timeout,
+        max_retries=parsed.max_retries,
         backends=backends,
         health_path=parsed.health_path,
         health_interval=parsed.health_interval,

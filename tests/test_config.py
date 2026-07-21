@@ -9,6 +9,9 @@ def test_uses_local_demonstration_defaults() -> None:
 
     assert settings.listen_host == "127.0.0.1"
     assert settings.listen_port == 8080
+    assert settings.upstream_connect_timeout == 2.0
+    assert settings.upstream_response_timeout == 2.0
+    assert settings.max_retries == 1
     assert settings.backends == DEFAULT_BACKENDS
     assert settings.health_path == "/health"
     assert settings.health_interval == 2.0
@@ -27,6 +30,12 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
             "8088",
             "--strategy",
             "least-connections",
+            "--upstream-connect-timeout",
+            "0.75",
+            "--upstream-response-timeout",
+            "6",
+            "--max-retries",
+            "3",
             "--health-path",
             "/ready",
             "--health-interval",
@@ -46,6 +55,9 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
 
     assert settings.listen_host == "0.0.0.0"
     assert settings.listen_port == 8088
+    assert settings.upstream_connect_timeout == 0.75
+    assert settings.upstream_response_timeout == 6.0
+    assert settings.max_retries == 3
     assert settings.health_path == "/ready"
     assert settings.health_interval == 5.0
     assert settings.health_timeout == 1.25
@@ -86,6 +98,21 @@ def test_rejects_unknown_routing_strategy() -> None:
 def test_rejects_invalid_health_timing(value: str) -> None:
     with pytest.raises(SystemExit):
         parse_settings(["--health-interval", value])
+
+
+@pytest.mark.parametrize(
+    "option",
+    ["--upstream-connect-timeout", "--upstream-response-timeout"],
+)
+def test_rejects_invalid_upstream_timeout(option: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_settings([option, "0"])
+
+
+@pytest.mark.parametrize("value", ["-1", "1.5", "not-a-number"])
+def test_rejects_invalid_max_retries(value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_settings(["--max-retries", value])
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "not-a-number"])

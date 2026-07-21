@@ -112,6 +112,14 @@ def test_acquire_and_release_track_active_requests(backends: list[Backend]) -> N
     assert [status.active_requests for status in pool.snapshot()] == [0, 0, 0]
 
 
+def test_acquire_can_exclude_previously_attempted_backend(
+    backends: list[Backend],
+) -> None:
+    pool = RoundRobinPool(backends)
+
+    assert pool.acquire(exclude={"backend-a"}) == backends[1]
+
+
 def test_rejects_release_without_matching_acquire(backends: list[Backend]) -> None:
     pool = RoundRobinPool(backends)
 

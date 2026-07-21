@@ -112,6 +112,9 @@ Custom addresses use repeatable `--backend` arguments:
 ```shell
 load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --strategy least-connections \
+  --upstream-connect-timeout 1 \
+  --upstream-response-timeout 5 \
+  --max-retries 1 \
   --backend api-a=http://10.0.0.1:9000 \
   --backend api-b=http://10.0.0.2:9000 \
   --health-path /ready \
@@ -174,5 +177,14 @@ curl -X POST http://127.0.0.1:8080/admin/backends/backend-a/drain
 
 It stops new assignments immediately while existing requests finish. The
 response and backend snapshot report `drained: true` once `active_requests`
-reaches zero. The next checkpoint will add explicit upstream connection and
-response timeout configuration.
+reaches zero. Backend connection and response waits have separate two-second
+defaults and can be configured with `--upstream-connect-timeout` and
+`--upstream-response-timeout`. Either timeout produces a controlled `502` and
+releases the backend's active-request count. Clients still receive the same safe
+`502`, while logs and Prometheus labels distinguish connection timeouts,
+connection failures, response timeouts, and other response failures. The next
+safe retry policy gives `GET` one additional attempt by default only after a
+connection timeout or failure, before request bytes were sent. Retries exclude
+previously attempted backends. `POST` and response-phase failures are never
+retried, preventing duplicate writes. `--max-retries 0` disables retries. The
+next checkpoint will forward client identity through standard proxy headers.

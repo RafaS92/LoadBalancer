@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import http.client
 import json
 import logging
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import perf_counter
 from urllib.parse import unquote, urlsplit
@@ -28,6 +28,16 @@ ADMIN_BACKENDS_PATH = "/admin/backends"
 METRICS_PATH = "/metrics"
 REQUEST_LOGGER = logging.getLogger("load_balancer.requests")
 ADMIN_LOGGER = logging.getLogger("load_balancer.admin")
+RETRYABLE_METHODS = {"GET"}
+RETRYABLE_OUTCOMES = {"backend_connect_timeout", "backend_connection_failed"}
+
+
+class UpstreamFailure(Exception):
+    """Carry a safe operational outcome from upstream communication."""
+
+    def __init__(self, outcome: str) -> None:
+        super().__init__(outcome)
+        self.outcome = outcome
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
@@ -36,7 +46,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     pool: BackendPool
     metrics: LoadBalancerMetrics
-    upstream_timeout = 2.0
+    upstream_connect_timeout = 2.0
+    upstream_response_timeout = 2.0
+    max_retries = 1
 
     def do_GET(self) -> None:
         """Forward one GET request or return a controlled gateway error."""
@@ -84,41 +96,84 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         """Select a backend and relay one supported HTTP request."""
 
         started_at = perf_counter()
-        backend = self.pool.acquire()
-        if backend is None:
-            self._send_body(503, b"No healthy backends available\n")
-            self._record_completion(
-                method, 503, None, "no_healthy_backend", started_at
-            )
-            return
+        attempted_backends: set[str] = set()
+        last_failure: UpstreamFailure | None = None
+        failed_backend: Backend | None = None
 
-        try:
-            try:
-                status, reason, headers, response_body = self._forward(
-                    method, backend, body
+        for attempt in range(self.max_retries + 1):
+            backend = self.pool.acquire(exclude=attempted_backends)
+            if backend is None:
+                if last_failure is None:
+                    self._send_body(503, b"No healthy backends available\n")
+                    self._record_completion(
+                        method, 503, None, "no_healthy_backend", started_at
+                    )
+                else:
+                    self._send_body(502, b"Selected backend could not be reached\n")
+                    self._record_completion(
+                        method,
+                        502,
+                        failed_backend,
+                        last_failure.outcome,
+                        started_at,
+                    )
+                return
+
+            if last_failure is not None and failed_backend is not None:
+                self.metrics.record_retry(
+                    method,
+                    last_failure.outcome,
+                    failed_backend.name,
                 )
-            except (OSError, http.client.HTTPException):
-                self._send_body(502, b"Selected backend could not be reached\n")
+            attempted_backends.add(backend.name)
+            try:
+                try:
+                    status, reason, headers, response_body = self._forward(
+                        method, backend, body
+                    )
+                except UpstreamFailure as failure:
+                    can_retry = (
+                        method in RETRYABLE_METHODS
+                        and failure.outcome in RETRYABLE_OUTCOMES
+                        and attempt < self.max_retries
+                    )
+                    if can_retry:
+                        last_failure = failure
+                        failed_backend = backend
+                        continue
+
+                    self._send_body(502, b"Selected backend could not be reached\n")
+                    self._record_completion(
+                        method,
+                        502,
+                        backend,
+                        failure.outcome,
+                        started_at,
+                    )
+                    return
+
+                self.send_response(status, reason)
+                for name, value in headers:
+                    lowered = name.lower()
+                    if (
+                        lowered not in HOP_BY_HOP_HEADERS
+                        and lowered != "content-length"
+                    ):
+                        self.send_header(name, value)
+                self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
+                outcome = "completed_after_retry" if attempt > 0 else "completed"
                 self._record_completion(
                     method,
-                    502,
+                    status,
                     backend,
-                    "backend_connection_failed",
+                    outcome,
                     started_at,
                 )
                 return
-
-            self.send_response(status, reason)
-            for name, value in headers:
-                lowered = name.lower()
-                if lowered not in HOP_BY_HOP_HEADERS and lowered != "content-length":
-                    self.send_header(name, value)
-            self.send_header("Content-Length", str(len(response_body)))
-            self.end_headers()
-            self.wfile.write(response_body)
-            self._record_completion(method, status, backend, "completed", started_at)
-        finally:
-            self.pool.release(backend.name)
+            finally:
+                self.pool.release(backend.name)
 
     def _forward(
         self, method: str, backend: Backend, body: bytes | None
@@ -129,10 +184,10 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         if target.scheme != "http" or target.hostname is None:
             raise ValueError(f"unsupported backend URL: {backend.url}")
 
-        connection = http.client.HTTPConnection(
+        connection = HTTPConnection(
             target.hostname,
             target.port or 80,
-            timeout=self.upstream_timeout,
+            timeout=self.upstream_connect_timeout,
         )
         headers = {
             name: value
@@ -143,10 +198,25 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         headers["Host"] = target.netloc
 
         try:
-            connection.request(method, self.path, body=body, headers=headers)
-            response = connection.getresponse()
-            body = response.read()
-            return response.status, response.reason, response.getheaders(), body
+            try:
+                connection.connect()
+            except TimeoutError as error:
+                raise UpstreamFailure("backend_connect_timeout") from error
+            except (OSError, HTTPException) as error:
+                raise UpstreamFailure("backend_connection_failed") from error
+
+            if connection.sock is None:
+                raise UpstreamFailure("backend_connection_failed")
+            connection.sock.settimeout(self.upstream_response_timeout)
+            try:
+                connection.request(method, self.path, body=body, headers=headers)
+                response = connection.getresponse()
+                body = response.read()
+                return response.status, response.reason, response.getheaders(), body
+            except TimeoutError as error:
+                raise UpstreamFailure("backend_response_timeout") from error
+            except (OSError, HTTPException) as error:
+                raise UpstreamFailure("backend_response_failed") from error
         finally:
             connection.close()
 
@@ -278,7 +348,9 @@ def create_proxy_server(
     address: tuple[str, int],
     pool: BackendPool,
     *,
-    upstream_timeout: float = 2.0,
+    upstream_connect_timeout: float = 2.0,
+    upstream_response_timeout: float = 2.0,
+    max_retries: int = 1,
     metrics: LoadBalancerMetrics | None = None,
 ) -> ThreadingHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
@@ -289,7 +361,9 @@ def create_proxy_server(
         {
             "pool": pool,
             "metrics": metrics or LoadBalancerMetrics(),
-            "upstream_timeout": upstream_timeout,
+            "upstream_connect_timeout": upstream_connect_timeout,
+            "upstream_response_timeout": upstream_response_timeout,
+            "max_retries": max_retries,
         },
     )
     return ThreadingHTTPServer(address, handler_class)

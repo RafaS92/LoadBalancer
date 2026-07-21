@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+import load_balancer.proxy as proxy_module
 from load_balancer.proxy import create_proxy_server
 from load_balancer.routing import Backend, RoundRobinPool
 
@@ -304,6 +305,197 @@ def test_metrics_endpoint_exposes_request_count_and_latency() -> None:
     assert 'status="200"' in request_lines[0]
     assert request_lines[0].endswith(" 1.0")
     assert "load_balancer_proxy_request_duration_seconds_count" in metrics
+
+
+def test_response_timeout_returns_502_and_releases_backend(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    allow_response = Event()
+
+    class SlowBackend(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            allow_response.wait(timeout=1)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), SlowBackend)
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(
+        ("127.0.0.1", 0),
+        pool,
+        upstream_response_timeout=0.05,
+    )
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(upstream),
+        running_server(proxy),
+    ):
+        try:
+            urlopen(f"{proxy_url(proxy)}/slow")
+        except HTTPError as error:
+            assert error.code == 502
+            assert error.read() == b"Selected backend could not be reached\n"
+        else:
+            raise AssertionError("expected a slow backend to return 502")
+        finally:
+            allow_response.set()
+
+    assert pool.snapshot()[0].active_requests == 0
+    assert json.loads(caplog.records[-1].message)["outcome"] == (
+        "backend_response_timeout"
+    )
+
+
+def test_connect_timeout_is_classified_in_logs_and_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class TimedOutConnection:
+        sock = None
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def connect(self) -> None:
+            raise TimeoutError
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "load_balancer.proxy.HTTPConnection",
+        TimedOutConnection,
+    )
+    pool = RoundRobinPool([Backend("backend-a", "http://backend-a:9001")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(proxy),
+    ):
+        try:
+            urlopen(f"{proxy_url(proxy)}/items")
+        except HTTPError as error:
+            assert error.code == 502
+        else:
+            raise AssertionError("expected a connection timeout to return 502")
+
+        with urlopen(f"{proxy_url(proxy)}/metrics") as response:
+            metrics = response.read().decode()
+
+    event = json.loads(caplog.records[-1].message)
+    assert event["outcome"] == "backend_connect_timeout"
+    assert 'outcome="backend_connect_timeout"' in metrics
+    assert pool.snapshot()[0].active_requests == 0
+
+
+def test_get_retries_different_backend_after_connect_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original_connection = proxy_module.HTTPConnection
+
+    class TimedOutConnection:
+        sock = None
+
+        def connect(self) -> None:
+            raise TimeoutError
+
+        def close(self) -> None:
+            pass
+
+    def connection_factory(
+        host: str, port: int, *, timeout: float
+    ) -> object:
+        if host == "failed-backend":
+            return TimedOutConnection()
+        return original_connection(host, port, timeout=timeout)
+
+    monkeypatch.setattr(proxy_module, "HTTPConnection", connection_factory)
+    upstream = backend_server("backend-b")
+    pool = RoundRobinPool(
+        [
+            Backend("backend-a", "http://failed-backend:9001"),
+            backend_for(upstream, "backend-b"),
+        ]
+    )
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(upstream),
+        running_server(proxy),
+    ):
+        with urlopen(f"{proxy_url(proxy)}/retry") as response:
+            assert json.load(response)["backend"] == "backend-b"
+        with urlopen(f"{proxy_url(proxy)}/metrics") as response:
+            metrics = response.read().decode()
+
+    event = json.loads(caplog.records[-1].message)
+    assert event["backend"] == "backend-b"
+    assert event["outcome"] == "completed_after_retry"
+    assert 'failed_backend="backend-a"' in metrics
+    assert 'reason="backend_connect_timeout"' in metrics
+
+
+def test_post_is_not_retried_after_connect_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original_connection = proxy_module.HTTPConnection
+
+    class TimedOutConnection:
+        sock = None
+
+        def connect(self) -> None:
+            raise TimeoutError
+
+        def close(self) -> None:
+            pass
+
+    def connection_factory(
+        host: str, port: int, *, timeout: float
+    ) -> object:
+        if host == "failed-backend":
+            return TimedOutConnection()
+        return original_connection(host, port, timeout=timeout)
+
+    monkeypatch.setattr(proxy_module, "HTTPConnection", connection_factory)
+    upstream = backend_server("backend-b")
+    pool = RoundRobinPool(
+        [
+            Backend("backend-a", "http://failed-backend:9001"),
+            backend_for(upstream, "backend-b"),
+        ]
+    )
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    request = Request(
+        f"{proxy_url(proxy)}/orders",
+        data=b'{"item":"book"}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(upstream),
+        running_server(proxy),
+    ):
+        try:
+            urlopen(request)
+        except HTTPError as error:
+            assert error.code == 502
+        else:
+            raise AssertionError("expected POST connection timeout to return 502")
+
+    event = json.loads(caplog.records[-1].message)
+    assert event["backend"] == "backend-a"
+    assert event["outcome"] == "backend_connect_timeout"
 
 
 def test_forwards_post_body_and_content_type() -> None:

@@ -33,6 +33,9 @@ def main() -> None:
     server = create_proxy_server(
         (settings.listen_host, settings.listen_port),
         pool,
+        upstream_connect_timeout=settings.upstream_connect_timeout,
+        upstream_response_timeout=settings.upstream_response_timeout,
+        max_retries=settings.max_retries,
         metrics=metrics,
     )
     host, port = server.server_address

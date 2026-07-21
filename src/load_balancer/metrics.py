@@ -38,6 +38,12 @@ class LoadBalancerMetrics:
             ("backend", "state"),
             registry=self._registry,
         )
+        self._retries = Counter(
+            "load_balancer_proxy_retries_total",
+            "Additional backend attempts made for safe proxy requests",
+            ("method", "reason", "failed_backend"),
+            registry=self._registry,
+        )
 
     def record(
         self,
@@ -74,6 +80,15 @@ class LoadBalancerMetrics:
         state = "healthy" if healthy else "unhealthy"
         self.set_backend_health(backend, healthy=healthy)
         self._health_transitions.labels(backend=backend, state=state).inc()
+
+    def record_retry(self, method: str, reason: str, failed_backend: str) -> None:
+        """Count one real additional attempt after a safe failure."""
+
+        self._retries.labels(
+            method=method,
+            reason=reason,
+            failed_backend=failed_backend,
+        ).inc()
 
     def render(self) -> bytes:
         """Render this server's registry in Prometheus text format."""
