@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
 
 import httpx
@@ -62,8 +63,18 @@ class HealthChecker:
     def check_once(self) -> None:
         """Run one complete health-check cycle."""
 
-        for status in self._pool.snapshot():
-            succeeded = self._probe(status.backend)
+        statuses = self._pool.snapshot()
+        with ThreadPoolExecutor(
+            max_workers=len(statuses),
+            thread_name_prefix="backend-health-probe",
+        ) as executor:
+            results = executor.map(
+                self._probe,
+                (status.backend for status in statuses),
+            )
+            probe_results = tuple(results)
+
+        for status, succeeded in zip(statuses, probe_results, strict=True):
             self._apply_result(status.backend.name, status.healthy, succeeded)
 
     def start(self) -> None:

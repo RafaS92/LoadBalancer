@@ -141,8 +141,9 @@ curl http://127.0.0.1:8080/admin/backends
 
 It returns each backend's name, URL, and current health as JSON without changing
 the routing sequence. The endpoint is currently unauthenticated and shares the
-traffic listener, so it should not be exposed publicly. This checkpoint still
-performs probes sequentially and buffers request and response bodies in memory
+traffic listener, so it should not be exposed publicly. Health probes for
+independent backends run concurrently, so one slow probe does not delay probes
+to the remaining backends. Request and response bodies are buffered in memory
 within configured limits.
 Each completed proxy request writes one JSON log event containing its method,
 path, selected backend, status, outcome, and duration. Request headers and
@@ -213,4 +214,4 @@ The proxy accepts only unambiguous `Content-Length` request framing. Requests
 using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are
 rejected and disconnected before backend selection, preventing unread bytes
 from desynchronizing the persistent HTTP connection. The next checkpoint will
-run independent backend health probes concurrently.
+add graceful process shutdown that lets active requests finish.

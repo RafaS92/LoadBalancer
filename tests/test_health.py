@@ -1,6 +1,6 @@
 import json
 import logging
-from threading import Event
+from threading import Event, Lock
 
 import httpx
 import pytest
@@ -75,6 +75,31 @@ def test_background_checker_runs_immediately() -> None:
         checker.stop()
 
     assert pool.choose() is None
+
+
+def test_probes_backends_concurrently() -> None:
+    both_started = Event()
+    started: set[str] = set()
+    lock = Lock()
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        with lock:
+            started.add(request.url.host or "")
+            if len(started) == 2:
+                both_started.set()
+        assert both_started.wait(timeout=1)
+        return httpx.Response(200)
+
+    backends = [
+        Backend("backend-a", "http://backend-a:9001"),
+        Backend("backend-b", "http://backend-b:9002"),
+    ]
+    pool = RoundRobinPool(backends)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        checker = HealthChecker(pool, client=client)
+        checker.check_once()
+
+    assert started == {"backend-a", "backend-b"}
 
 
 def test_network_error_marks_backend_unhealthy() -> None:
