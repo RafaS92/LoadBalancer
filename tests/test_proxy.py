@@ -1,7 +1,8 @@
 import json
 import logging
+import socket
 from contextlib import contextmanager
-from http.client import HTTPConnection
+from http.client import HTTPConnection, RemoteDisconnected
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
 from typing import Iterator
@@ -12,7 +13,7 @@ from uuid import UUID
 import pytest
 
 import load_balancer.proxy as proxy_module
-from load_balancer.proxy import create_proxy_server
+from load_balancer.proxy import ProxyRequestHandler, create_proxy_server
 from load_balancer.routing import Backend, RoundRobinPool
 
 
@@ -426,6 +427,109 @@ def test_response_timeout_returns_502_and_releases_backend(
     assert json.loads(caplog.records[-1].message)["outcome"] == (
         "backend_response_timeout"
     )
+
+
+def test_client_disconnect_releases_backend_and_records_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    upstream = backend_server("backend-a")
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+
+    def simulate_disconnect(
+        self: ProxyRequestHandler,
+        status: int,
+        reason: str,
+        headers: list[tuple[str, str]],
+        body: bytes,
+        request_id: str,
+    ) -> bool:
+        del status, reason, headers, body, request_id
+        self.close_connection = True
+        return False
+
+    monkeypatch.setattr(
+        ProxyRequestHandler,
+        "_send_upstream_response",
+        simulate_disconnect,
+    )
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(upstream),
+        running_server(proxy),
+    ):
+        with pytest.raises(RemoteDisconnected):
+            urlopen(f"{proxy_url(proxy)}/disconnect")
+
+    assert pool.snapshot()[0].active_requests == 0
+    event = json.loads(caplog.records[-1].message)
+    assert event["status"] == 499
+    assert event["backend"] == "backend-a"
+    assert event["outcome"] == "client_disconnected"
+
+
+def test_upstream_response_writer_suppresses_broken_pipe() -> None:
+    class DisconnectingWriter:
+        def write(self, body: bytes) -> None:
+            del body
+            raise BrokenPipeError
+
+    class HandlerHarness:
+        close_connection = False
+        wfile = DisconnectingWriter()
+
+        def send_response(self, status: int, reason: str) -> None:
+            del status, reason
+
+        def send_header(self, name: str, value: str) -> None:
+            del name, value
+
+        def end_headers(self) -> None:
+            pass
+
+    handler = HandlerHarness()
+    sent = ProxyRequestHandler._send_upstream_response(
+        handler,  # type: ignore[arg-type]
+        200,
+        "OK",
+        [],
+        b"response",
+        "request-123",
+    )
+
+    assert sent is False
+    assert handler.close_connection is True
+
+
+def test_disconnect_during_request_body_does_not_select_backend(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    host, port = proxy.server_address
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(proxy),
+        socket.create_connection((host, port)) as client,
+    ):
+        client.sendall(
+            b"POST /orders HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Content-Length: 10\r\n"
+            b"\r\n"
+            b"abc"
+        )
+        client.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b""
+
+    assert pool.snapshot()[0].active_requests == 0
+    event = json.loads(caplog.records[-1].message)
+    assert event["status"] == 499
+    assert event["backend"] is None
+    assert event["outcome"] == "client_disconnected"
 
 
 def test_connect_timeout_is_classified_in_logs_and_metrics(

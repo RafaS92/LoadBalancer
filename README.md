@@ -214,7 +214,10 @@ The proxy accepts only unambiguous `Content-Length` request framing. Requests
 using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are
 rejected and disconnected before backend selection, preventing unread bytes
 from desynchronizing the persistent HTTP connection. The next checkpoint will
-handle client disconnects without leaking backend accounting. Process shutdown
-is now coordinated for both `SIGINT` and `SIGTERM`: the listener stops accepting
-new traffic, the server waits for active request threads, the health checker is
-stopped, and signal handlers are restored before exit.
+stream bounded backend responses instead of buffering them completely. Process
+shutdown is coordinated for both `SIGINT` and `SIGTERM`: the listener stops
+accepting new traffic, the server waits for active request threads, the health
+checker is stopped, and signal handlers are restored before exit. Client
+disconnects during response delivery are suppressed as expected network events,
+recorded with the `client_disconnected` outcome and status `499`, and still pass
+through the normal backend-release path.

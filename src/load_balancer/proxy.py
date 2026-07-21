@@ -134,7 +134,20 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             )
             return None
 
-        return self.rfile.read(content_length)
+        started_at = perf_counter()
+        try:
+            body = self.rfile.read(content_length)
+        except ConnectionError:
+            body = b""
+        if len(body) != content_length:
+            self._record_client_disconnect(
+                method,
+                backend=None,
+                started_at=started_at,
+                request_id=self._request_id(),
+            )
+            return None
+        return body
 
     def _content_length(self, method: str, *, allow_body: bool) -> int | None:
         """Validate supported HTTP/1.1 request framing and return its length."""
@@ -297,18 +310,20 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     )
                     return
 
-                self.send_response(status, reason)
-                for name, value in headers:
-                    lowered = name.lower()
-                    if (
-                        lowered not in HOP_BY_HOP_HEADERS
-                        and lowered not in {"content-length", "x-request-id"}
-                    ):
-                        self.send_header(name, value)
-                self.send_header("Content-Length", str(len(response_body)))
-                self.send_header("X-Request-Id", request_id)
-                self.end_headers()
-                self.wfile.write(response_body)
+                if not self._send_upstream_response(
+                    status,
+                    reason,
+                    headers,
+                    response_body,
+                    request_id,
+                ):
+                    self._record_client_disconnect(
+                        method,
+                        backend=backend,
+                        started_at=started_at,
+                        request_id=request_id,
+                    )
+                    return
                 outcome = "completed_after_retry" if attempt > 0 else "completed"
                 self._record_completion(
                     method,
@@ -321,6 +336,54 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 return
             finally:
                 self.pool.release(backend.name)
+
+    def _send_upstream_response(
+        self,
+        status: int,
+        reason: str,
+        headers: list[tuple[str, str]],
+        body: bytes,
+        request_id: str,
+    ) -> bool:
+        """Send one backend response, returning false if the client disconnected."""
+
+        try:
+            self.send_response(status, reason)
+            for name, value in headers:
+                lowered = name.lower()
+                if (
+                    lowered not in HOP_BY_HOP_HEADERS
+                    and lowered not in {"content-length", "x-request-id"}
+                ):
+                    self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", request_id)
+            self.end_headers()
+            self.wfile.write(body)
+        except ConnectionError:
+            self.close_connection = True
+            return False
+        return True
+
+    def _record_client_disconnect(
+        self,
+        method: str,
+        *,
+        backend: Backend | None,
+        started_at: float,
+        request_id: str,
+    ) -> None:
+        """Record an interrupted client connection without raising."""
+
+        self.close_connection = True
+        self._record_completion(
+            method,
+            499,
+            backend,
+            "client_disconnected",
+            started_at,
+            request_id,
+        )
 
     def _forward(
         self,
@@ -467,13 +530,16 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         """Send a small response with an explicit content type and body length."""
 
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        if request_id is not None:
-            self.send_header("X-Request-Id", request_id)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            if request_id is not None:
+                self.send_header("X-Request-Id", request_id)
+            self.end_headers()
+            self.wfile.write(body)
+        except ConnectionError:
+            self.close_connection = True
 
     def _record_completion(
         self,
