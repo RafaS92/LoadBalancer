@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from time import perf_counter
 from urllib.parse import unquote, urlsplit
+from uuid import uuid4
 
 from prometheus_client import CONTENT_TYPE_LATEST
 
@@ -24,12 +26,18 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+FORWARDED_HEADERS = {
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+}
 ADMIN_BACKENDS_PATH = "/admin/backends"
 METRICS_PATH = "/metrics"
 REQUEST_LOGGER = logging.getLogger("load_balancer.requests")
 ADMIN_LOGGER = logging.getLogger("load_balancer.admin")
 RETRYABLE_METHODS = {"GET"}
 RETRYABLE_OUTCOMES = {"backend_connect_timeout", "backend_connection_failed"}
+REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
 class UpstreamFailure(Exception):
@@ -49,6 +57,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     upstream_connect_timeout = 2.0
     upstream_response_timeout = 2.0
     max_retries = 1
+    max_request_body_bytes = 1_048_576
 
     def do_GET(self) -> None:
         """Forward one GET request or return a controlled gateway error."""
@@ -79,6 +88,25 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             self._send_body(400, b"Invalid Content-Length header\n")
             return
 
+        if content_length > self.max_request_body_bytes:
+            request_id = self._request_id()
+            started_at = perf_counter()
+            self.close_connection = True
+            self._send_body(
+                413,
+                b"Request body exceeds configured limit\n",
+                request_id=request_id,
+            )
+            self._record_completion(
+                "POST",
+                413,
+                None,
+                "request_body_too_large",
+                started_at,
+                request_id,
+            )
+            return
+
         body = self.rfile.read(content_length)
         backend_action = self._parse_backend_action()
         if backend_action is not None:
@@ -96,6 +124,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         """Select a backend and relay one supported HTTP request."""
 
         started_at = perf_counter()
+        request_id = self._request_id()
         attempted_backends: set[str] = set()
         last_failure: UpstreamFailure | None = None
         failed_backend: Backend | None = None
@@ -104,18 +133,32 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             backend = self.pool.acquire(exclude=attempted_backends)
             if backend is None:
                 if last_failure is None:
-                    self._send_body(503, b"No healthy backends available\n")
+                    self._send_body(
+                        503,
+                        b"No healthy backends available\n",
+                        request_id=request_id,
+                    )
                     self._record_completion(
-                        method, 503, None, "no_healthy_backend", started_at
+                        method,
+                        503,
+                        None,
+                        "no_healthy_backend",
+                        started_at,
+                        request_id,
                     )
                 else:
-                    self._send_body(502, b"Selected backend could not be reached\n")
+                    self._send_body(
+                        502,
+                        b"Selected backend could not be reached\n",
+                        request_id=request_id,
+                    )
                     self._record_completion(
                         method,
                         502,
                         failed_backend,
                         last_failure.outcome,
                         started_at,
+                        request_id,
                     )
                 return
 
@@ -129,7 +172,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             try:
                 try:
                     status, reason, headers, response_body = self._forward(
-                        method, backend, body
+                        method, backend, body, request_id
                     )
                 except UpstreamFailure as failure:
                     can_retry = (
@@ -142,13 +185,18 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                         failed_backend = backend
                         continue
 
-                    self._send_body(502, b"Selected backend could not be reached\n")
+                    self._send_body(
+                        502,
+                        b"Selected backend could not be reached\n",
+                        request_id=request_id,
+                    )
                     self._record_completion(
                         method,
                         502,
                         backend,
                         failure.outcome,
                         started_at,
+                        request_id,
                     )
                     return
 
@@ -157,10 +205,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     lowered = name.lower()
                     if (
                         lowered not in HOP_BY_HOP_HEADERS
-                        and lowered != "content-length"
+                        and lowered not in {"content-length", "x-request-id"}
                     ):
                         self.send_header(name, value)
                 self.send_header("Content-Length", str(len(response_body)))
+                self.send_header("X-Request-Id", request_id)
                 self.end_headers()
                 self.wfile.write(response_body)
                 outcome = "completed_after_retry" if attempt > 0 else "completed"
@@ -170,13 +219,18 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     backend,
                     outcome,
                     started_at,
+                    request_id,
                 )
                 return
             finally:
                 self.pool.release(backend.name)
 
     def _forward(
-        self, method: str, backend: Backend, body: bytes | None
+        self,
+        method: str,
+        backend: Backend,
+        body: bytes | None,
+        request_id: str,
     ) -> tuple[int, str, list[tuple[str, str]], bytes]:
         """Send the current request to one backend."""
 
@@ -194,8 +248,16 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             for name, value in self.headers.items()
             if name.lower() not in HOP_BY_HOP_HEADERS
             and name.lower() not in {"host", "content-length"}
+            and name.lower() not in FORWARDED_HEADERS
+            and name.lower() != "x-request-id"
         }
         headers["Host"] = target.netloc
+        headers["X-Forwarded-For"] = self.client_address[0]
+        original_host = self.headers.get("Host")
+        if original_host is not None:
+            headers["X-Forwarded-Host"] = original_host
+        headers["X-Forwarded-Proto"] = "http"
+        headers["X-Request-Id"] = request_id
 
         try:
             try:
@@ -297,12 +359,15 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         body: bytes,
         *,
         content_type: str = "text/plain; charset=utf-8",
+        request_id: str | None = None,
     ) -> None:
         """Send a small response with an explicit content type and body length."""
 
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if request_id is not None:
+            self.send_header("X-Request-Id", request_id)
         self.end_headers()
         self.wfile.write(body)
 
@@ -313,6 +378,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         backend: Backend | None,
         outcome: str,
         started_at: float,
+        request_id: str,
     ) -> None:
         """Record metrics and write one log for a completed proxy request."""
 
@@ -334,11 +400,20 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                     "status": status,
                     "backend": backend_name,
                     "outcome": outcome,
+                    "request_id": request_id,
                     "duration_ms": round(duration_seconds * 1000, 3),
                 },
                 separators=(",", ":"),
             )
         )
+
+    def _request_id(self) -> str:
+        """Return a safe client correlation ID or generate a new UUID."""
+
+        supplied = self.headers.get("X-Request-Id")
+        if supplied is not None and REQUEST_ID_PATTERN.fullmatch(supplied):
+            return supplied
+        return str(uuid4())
 
     def log_message(self, format: str, *args: object) -> None:
         """Suppress the base handler's duplicate unstructured access log."""
@@ -351,6 +426,7 @@ def create_proxy_server(
     upstream_connect_timeout: float = 2.0,
     upstream_response_timeout: float = 2.0,
     max_retries: int = 1,
+    max_request_body_bytes: int = 1_048_576,
     metrics: LoadBalancerMetrics | None = None,
 ) -> ThreadingHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
@@ -364,6 +440,7 @@ def create_proxy_server(
             "upstream_connect_timeout": upstream_connect_timeout,
             "upstream_response_timeout": upstream_response_timeout,
             "max_retries": max_retries,
+            "max_request_body_bytes": max_request_body_bytes,
         },
     )
     return ThreadingHTTPServer(address, handler_class)

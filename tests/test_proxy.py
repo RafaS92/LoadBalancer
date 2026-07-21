@@ -6,6 +6,7 @@ from threading import Event, Thread
 from typing import Iterator
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 import pytest
 
@@ -87,6 +88,7 @@ def test_forwards_path_and_query_and_preserves_response(
 
             assert response.status == 200
             assert response.headers["X-Backend"] == "backend-a"
+            request_id = response.headers["X-Request-Id"]
             assert payload == {"backend": "backend-a", "path": "/items?limit=5"}
 
     event = json.loads(caplog.records[-1].message)
@@ -97,9 +99,73 @@ def test_forwards_path_and_query_and_preserves_response(
         "status": 200,
         "backend": "backend-a",
         "outcome": "completed",
+        "request_id": request_id,
         "duration_ms": event["duration_ms"],
     }
+    assert UUID(request_id)
     assert event["duration_ms"] >= 0
+
+
+def test_forwards_trusted_client_identity_headers() -> None:
+    class HeaderBackend(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            body = json.dumps(
+                {
+                    "host": self.headers.get("Host"),
+                    "forwarded_for": self.headers.get("X-Forwarded-For"),
+                    "forwarded_host": self.headers.get("X-Forwarded-Host"),
+                    "forwarded_proto": self.headers.get("X-Forwarded-Proto"),
+                    "request_id": self.headers.get("X-Request-Id"),
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), HeaderBackend)
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+    request = Request(
+        f"{proxy_url(proxy)}/identity",
+        headers={
+            "X-Forwarded-For": "203.0.113.10",
+            "X-Forwarded-Host": "spoofed.example",
+            "X-Forwarded-Proto": "https",
+            "X-Request-Id": "request-123",
+        },
+    )
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(request) as response:
+            payload = json.load(response)
+            returned_request_id = response.headers["X-Request-Id"]
+
+        invalid_request = Request(
+            f"{proxy_url(proxy)}/identity",
+            headers={"X-Request-Id": "not a valid request id"},
+        )
+        with urlopen(invalid_request) as response:
+            invalid_payload = json.load(response)
+            generated_request_id = response.headers["X-Request-Id"]
+
+    upstream_host, upstream_port = upstream.server_address
+    proxy_host, proxy_port = proxy.server_address
+    assert payload == {
+        "host": f"{upstream_host}:{upstream_port}",
+        "forwarded_for": "127.0.0.1",
+        "forwarded_host": f"{proxy_host}:{proxy_port}",
+        "forwarded_proto": "http",
+        "request_id": "request-123",
+    }
+    assert returned_request_id == "request-123"
+    assert invalid_payload["request_id"] == generated_request_id
+    assert generated_request_id != "not a valid request id"
+    assert UUID(generated_request_id)
 
 
 def test_routes_successive_requests_round_robin() -> None:
@@ -520,6 +586,63 @@ def test_forwards_post_body_and_content_type() -> None:
                 "content_type": "application/json",
                 "body": '{"item":"book"}',
             }
+
+
+def test_rejects_post_body_larger_than_configured_limit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
+    proxy = create_proxy_server(
+        ("127.0.0.1", 0),
+        pool,
+        max_request_body_bytes=4,
+    )
+    request = Request(
+        f"{proxy_url(proxy)}/orders",
+        data=b"12345",
+        method="POST",
+    )
+
+    with (
+        caplog.at_level(logging.INFO, logger="load_balancer.requests"),
+        running_server(proxy),
+    ):
+        with pytest.raises(HTTPError) as raised:
+            urlopen(request)
+
+        assert raised.value.code == 413
+        assert raised.value.read() == b"Request body exceeds configured limit\n"
+        request_id = raised.value.headers["X-Request-Id"]
+
+    assert pool.snapshot()[0].active_requests == 0
+    event = json.loads(caplog.records[-1].message)
+    assert event["status"] == 413
+    assert event["backend"] is None
+    assert event["outcome"] == "request_body_too_large"
+    assert event["request_id"] == request_id
+
+
+def test_accepts_post_body_at_configured_limit() -> None:
+    upstream = backend_server("backend-a")
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(
+        ("127.0.0.1", 0),
+        pool,
+        max_request_body_bytes=5,
+    )
+    request = Request(
+        f"{proxy_url(proxy)}/orders",
+        data=b"12345",
+        method="POST",
+    )
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(request) as response:
+            payload = json.load(response)
+            status = response.status
+
+    assert status == 201
+    assert payload["body"] == "12345"
 
 
 def test_returns_503_when_no_backend_is_healthy(

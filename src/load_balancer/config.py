@@ -25,6 +25,7 @@ class Settings:
     upstream_connect_timeout: float
     upstream_response_timeout: float
     max_retries: int
+    max_request_body_bytes: int
     backends: tuple[Backend, ...]
     health_path: str
     health_interval: float
@@ -139,6 +140,12 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         default=1,
         help="additional connection attempts allowed for safe requests",
     )
+    parser.add_argument(
+        "--max-request-body-bytes",
+        type=positive_integer_argument,
+        default=1_048_576,
+        help="maximum accepted request body size in bytes",
+    )
     parser.add_argument("--health-path", type=health_path_argument, default="/health")
     parser.add_argument(
         "--health-interval",
@@ -182,6 +189,7 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
         upstream_connect_timeout=parsed.upstream_connect_timeout,
         upstream_response_timeout=parsed.upstream_response_timeout,
         max_retries=parsed.max_retries,
+        max_request_body_bytes=parsed.max_request_body_bytes,
         backends=backends,
         health_path=parsed.health_path,
         health_interval=parsed.health_interval,

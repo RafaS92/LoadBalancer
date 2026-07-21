@@ -12,6 +12,7 @@ def test_uses_local_demonstration_defaults() -> None:
     assert settings.upstream_connect_timeout == 2.0
     assert settings.upstream_response_timeout == 2.0
     assert settings.max_retries == 1
+    assert settings.max_request_body_bytes == 1_048_576
     assert settings.backends == DEFAULT_BACKENDS
     assert settings.health_path == "/health"
     assert settings.health_interval == 2.0
@@ -36,6 +37,8 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
             "6",
             "--max-retries",
             "3",
+            "--max-request-body-bytes",
+            "2048",
             "--health-path",
             "/ready",
             "--health-interval",
@@ -58,6 +61,7 @@ def test_accepts_custom_listener_and_repeated_backends() -> None:
     assert settings.upstream_connect_timeout == 0.75
     assert settings.upstream_response_timeout == 6.0
     assert settings.max_retries == 3
+    assert settings.max_request_body_bytes == 2048
     assert settings.health_path == "/ready"
     assert settings.health_interval == 5.0
     assert settings.health_timeout == 1.25
@@ -113,6 +117,12 @@ def test_rejects_invalid_upstream_timeout(option: str) -> None:
 def test_rejects_invalid_max_retries(value: str) -> None:
     with pytest.raises(SystemExit):
         parse_settings(["--max-retries", value])
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "not-a-number"])
+def test_rejects_invalid_max_request_body_bytes(value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_settings(["--max-request-body-bytes", value])
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "not-a-number"])

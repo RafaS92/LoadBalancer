@@ -115,6 +115,7 @@ load-balancer --listen-host 0.0.0.0 --listen-port 8088 \
   --upstream-connect-timeout 1 \
   --upstream-response-timeout 5 \
   --max-retries 1 \
+  --max-request-body-bytes 1048576 \
   --backend api-a=http://10.0.0.1:9000 \
   --backend api-b=http://10.0.0.2:9000 \
   --health-path /ready \
@@ -187,4 +188,17 @@ safe retry policy gives `GET` one additional attempt by default only after a
 connection timeout or failure, before request bytes were sent. Retries exclude
 previously attempted backends. `POST` and response-phase failures are never
 retried, preventing duplicate writes. `--max-retries 0` disables retries. The
-next checkpoint will forward client identity through standard proxy headers.
+proxy now forwards trusted `X-Forwarded-For`, `X-Forwarded-Host`, and
+`X-Forwarded-Proto` values so backends retain client IP, original host, and
+scheme context after proxying. Client-supplied versions are overwritten to
+prevent spoofing. Because version 1 has no TLS listener, the forwarded scheme is
+always `http`. Each proxied request also carries a validated client-provided or
+generated `X-Request-Id` through every retry, the backend request, client
+response, and structured completion log. Request IDs are intentionally excluded
+from Prometheus labels to avoid unbounded metric cardinality. Request bodies are
+limited to 1 MiB by default and the limit can be configured with
+`--max-request-body-bytes`. A declared body above the limit is rejected with
+`413 Payload Too Large` before a backend is selected or the body is buffered.
+The connection is then closed so unread request bytes cannot be interpreted as
+a subsequent request. The next checkpoint will extend method support while
+preserving the same forwarding and safety rules.
