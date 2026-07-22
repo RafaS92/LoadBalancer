@@ -1,8 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { RecentRequest } from "../types";
-import { RecentRequests } from "./RecentRequests";
+import { RecentRequests } from "../../src/components/RecentRequests";
+import type { RecentRequest } from "../../src/types";
 
 const generatedAt = "2026-07-22T18:00:00Z";
 const requests: RecentRequest[] = [

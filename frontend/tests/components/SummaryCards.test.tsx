@@ -1,8 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { DashboardSummary } from "../types";
-import { SummaryCards } from "./SummaryCards";
+import { SummaryCards } from "../../src/components/SummaryCards";
+import type { DashboardSummary } from "../../src/types";
 
 describe("SummaryCards", () => {
   it("renders the dashboard traffic totals", () => {

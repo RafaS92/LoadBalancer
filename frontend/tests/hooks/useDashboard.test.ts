@@ -1,14 +1,14 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchDashboard } from "../api";
-import type { DashboardSnapshot } from "../types";
+import { fetchDashboard } from "../../src/api";
 import {
   DASHBOARD_REFRESH_INTERVAL_MS,
   useDashboard,
-} from "./useDashboard";
+} from "../../src/hooks/useDashboard";
+import type { DashboardSnapshot } from "../../src/types";
 
-vi.mock("../api", () => ({
+vi.mock("../../src/api", () => ({
   fetchDashboard: vi.fn(),
 }));
 

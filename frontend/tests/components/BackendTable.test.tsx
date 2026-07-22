@@ -1,8 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { BackendSnapshot } from "../types";
-import { BackendTable } from "./BackendTable";
+import { BackendTable } from "../../src/components/BackendTable";
+import type { BackendSnapshot } from "../../src/types";
 
 const backends: BackendSnapshot[] = [
   {
