@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.pytest_cache
+.ruff_cache
+.DS_Store
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+backend/tests
+frontend/dist
+frontend/node_modules
+frontend/tests
+*.log

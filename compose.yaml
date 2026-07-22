@@ -1,0 +1,137 @@
+name: learning-load-balancer
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: backend/Dockerfile
+
+x-demo-backend: &demo-backend
+  image: learning-load-balancer-backend:local
+  build: *backend-build
+  init: true
+  expose:
+    - "9000"
+  networks:
+    - application
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  stop_grace_period: 10s
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=1).read()"
+    interval: 2s
+    timeout: 2s
+    retries: 10
+    start_period: 2s
+
+services:
+  backend-a:
+    <<: *demo-backend
+    command:
+      - demo-backend
+      - --name
+      - backend-a
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+
+  backend-b:
+    <<: *demo-backend
+    command:
+      - demo-backend
+      - --name
+      - backend-b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+
+  backend-c:
+    <<: *demo-backend
+    command:
+      - demo-backend
+      - --name
+      - backend-c
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+
+  load-balancer:
+    image: learning-load-balancer-backend:local
+    build: *backend-build
+    init: true
+    command:
+      - load-balancer
+      - --listen-host
+      - 0.0.0.0
+      - --listen-port
+      - "8080"
+      - --backend
+      - backend-a=http://backend-a:9000
+      - --backend
+      - backend-b=http://backend-b:9000
+      - --backend
+      - backend-c=http://backend-c:9000
+    depends_on:
+      backend-a:
+        condition: service_healthy
+      backend-b:
+        condition: service_healthy
+      backend-c:
+        condition: service_healthy
+    ports:
+      - "${LOAD_BALANCER_PORT:-8080}:8080"
+    networks:
+      - application
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/dashboard', timeout=1).read()"
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+  frontend:
+    image: learning-load-balancer-frontend:local
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    init: true
+    depends_on:
+      load-balancer:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:8080"
+    networks:
+      - application
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 10s
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q -O /dev/null http://127.0.0.1:8080/health"
+      interval: 5s
+      timeout: 2s
+      retries: 10
+      start_period: 2s
+
+networks:
+  application:
+    name: learning-load-balancer-network

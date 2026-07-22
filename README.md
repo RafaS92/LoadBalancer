@@ -86,8 +86,8 @@ extension points, and the intended frontend integration boundary.
 
 Version 1 is complete when:
 
-1. `make demo` starts the load balancer, dashboard, traffic generator, and three
-   identifiable backend services from a fresh clone.
+1. `make docker-up` starts the load balancer, dashboard, and three identifiable
+   backend services from a fresh clone.
 2. Requests are distributed according to the selected routing strategy.
 3. Stopping one backend does not stop successful traffic through the remaining
    healthy backends.
@@ -127,6 +127,67 @@ Run `make backend`, `make frontend`, `make demo-a`, `make demo-b`, and
 `make backend BACKEND_ARGS="--strategy least-connections"` to pass options to
 the load balancer. Focused Python commands remain available through
 `backend/Makefile`.
+
+## Docker Compose demonstration
+
+The reproducible full-system demonstration requires Docker Engine or Docker
+Desktop with Docker Compose v2. Build and start all five services with:
+
+```shell
+make docker-up
+```
+
+Compose waits for each service health check before reporting success. The
+running endpoints are:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `http://127.0.0.1:3000` | Production React dashboard served by unprivileged Nginx |
+| `http://127.0.0.1:8080` | Direct load-balancer traffic and local operational endpoints |
+
+Useful lifecycle commands are:
+
+```shell
+make docker-ps
+make docker-logs
+make docker-smoke
+make docker-down
+```
+
+`make docker-smoke` verifies the frontend, the dashboard JSON proxy, routing to
+all three backends, continued traffic after stopping `backend-a`, and recovery
+after restarting it. The script restores `backend-a` if it exits early. It
+requires `curl` and Python 3 on the host in addition to Docker.
+
+To demonstrate failure manually:
+
+```shell
+docker compose stop backend-a
+curl http://127.0.0.1:8080/demo
+docker compose start backend-a
+```
+
+The health checker removes the stopped service from rotation and restores it
+after enough successful probes. `backend-a`, `backend-b`, and `backend-c` are
+available only on the private Compose network; they are not published to the
+host. Override published ports when the defaults are occupied:
+
+```shell
+LOAD_BALANCER_PORT=18080 FRONTEND_PORT=13000 make docker-up
+```
+
+Use matching `LOAD_BALANCER_URL` and `FRONTEND_URL` values with
+`make docker-smoke` when overriding ports. Docker images are intended for the
+reproducible demonstration; use `make backend` and `make frontend` for the
+faster local edit-and-reload workflow.
+
+The administration, metrics, and dashboard endpoints remain unauthenticated.
+Keep port 8080 local and do not expose this Compose configuration publicly.
+
+If `make docker-up` fails, run `make docker-ps` and `make docker-logs`. A clear
+"Docker is required" message means Docker or the Compose plugin is not
+installed. Port allocation errors mean ports 3000 or 8080 are already in use;
+use the overrides above or stop the conflicting local process.
 
 Custom addresses use repeatable `--backend` arguments:
 

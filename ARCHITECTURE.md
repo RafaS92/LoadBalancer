@@ -62,9 +62,35 @@ is intentionally process-local and resets on restart in this first iteration.
 
 The React application in `frontend/` depends only on the dashboard JSON
 contract. Its Vite development proxy keeps browser configuration out of the
-Python request path. Production static hosting, authentication, and operator
-controls remain deferred; those concerns should not be added to upstream
-transport or routing policy.
+Python request path. In the Docker demonstration, unprivileged Nginx serves the
+compiled frontend and proxies only `/api/` to the load balancer on the private
+Compose network. Authentication and frontend operator controls remain deferred;
+those concerns should not be added to upstream transport or routing policy.
+
+## Container topology
+
+```mermaid
+flowchart LR
+    Browser["Browser :3000"] --> Frontend["Frontend / Nginx :8080"]
+    Frontend -->|"/api/*"| LoadBalancer["Load balancer :8080"]
+    Client["Direct client :8080"] --> LoadBalancer
+    LoadBalancer --> A["backend-a :9000"]
+    LoadBalancer --> B["backend-b :9000"]
+    LoadBalancer --> C["backend-c :9000"]
+```
+
+The three demo services and load balancer use one Python image because their
+entry points are provided by the same package. Compose replaces the image's
+default command for each demo service. The demo backends expose port 9000 only
+inside the `application` network; only the load balancer and frontend publish
+host ports.
+
+Container health checks form the startup dependency chain: demo backend health
+precedes load-balancer readiness, and load-balancer readiness precedes frontend
+startup. Runtime health remains the responsibility of the load balancer's own
+health checker, which continues probing stopped and recovered backend services.
+All containers run without root privileges or Linux capabilities and enable the
+`no-new-privileges` security option.
 
 ## Extension points
 
