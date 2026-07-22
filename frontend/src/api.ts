@@ -7,6 +7,7 @@ export async function fetchDashboard(
 ): Promise<DashboardSnapshot> {
   const response = await fetch(DASHBOARD_ENDPOINT, {
     headers: { Accept: "application/json" },
+    method: "GET",
     signal,
   });
 

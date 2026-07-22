@@ -114,18 +114,19 @@ The application accepts HTTP `GET`, `POST`, and `DELETE` requests and can be
 configured without editing source code. With no arguments it listens on
 `127.0.0.1:8080` and uses demonstration backends on ports 9001 through 9003.
 
-Backend development shortcuts are available through `backend/Makefile`:
+The root `Makefile` is the main development entry point:
 
 ```shell
-cd backend
 make help
 make install
 make check
 ```
 
-Use `make run ARGS="--strategy least-connections"` to pass options to the load
-balancer. Run `make demo-a`, `make demo-b`, and `make demo-c` in separate
-terminals to start the three default demo services.
+Run `make backend`, `make frontend`, `make demo-a`, `make demo-b`, and
+`make demo-c` in separate terminals for the complete local stack. Use
+`make backend BACKEND_ARGS="--strategy least-connections"` to pass options to
+the load balancer. Focused Python commands remain available through
+`backend/Makefile`.
 
 Custom addresses use repeatable `--backend` arguments:
 
@@ -265,10 +266,8 @@ The first read-only React dashboard is in `frontend/`. Start the load balancer,
 then run the frontend development server in a second terminal:
 
 ```shell
-load-balancer
-cd frontend
-npm install
-npm run dev
+make backend
+make frontend
 ```
 
 Open `http://127.0.0.1:5173`. Vite forwards `/api` requests to the load balancer
