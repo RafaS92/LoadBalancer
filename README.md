@@ -114,6 +114,19 @@ The application accepts HTTP `GET`, `POST`, and `DELETE` requests and can be
 configured without editing source code. With no arguments it listens on
 `127.0.0.1:8080` and uses demonstration backends on ports 9001 through 9003.
 
+Backend development shortcuts are available through `backend/Makefile`:
+
+```shell
+cd backend
+make help
+make install
+make check
+```
+
+Use `make run ARGS="--strategy least-connections"` to pass options to the load
+balancer. Run `make demo-a`, `make demo-b`, and `make demo-c` in separate
+terminals to start the three default demo services.
+
 Custom addresses use repeatable `--backend` arguments:
 
 ```shell
@@ -246,8 +259,23 @@ traffic aggregates in `backends`, and a bounded `recent_requests` list. The
 response is marked `Cache-Control: no-store`. This first version intentionally
 supports only `GET`; `POST`, `PUT`, `PATCH`, and `DELETE` are not part of the
 frontend API. Traffic history is held in memory by one load-balancer process and
-resets when that process restarts. No frontend application is included in this
-checkpoint.
+resets when that process restarts.
+
+The first read-only React dashboard is in `frontend/`. Start the load balancer,
+then run the frontend development server in a second terminal:
+
+```shell
+load-balancer
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Vite forwards `/api` requests to the load balancer
+on port 8080 during development. The page refreshes the snapshot every five
+seconds and displays summary totals, backend state, and recent requests. It has
+no operator actions in this checkpoint. Run `npm run build` to type-check the
+frontend and create a production bundle in `frontend/dist`.
 
 The proxy accepts only unambiguous `Content-Length` request framing. Requests
 using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are

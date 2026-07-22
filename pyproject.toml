@@ -22,12 +22,19 @@ dev = [
 load-balancer = "load_balancer.cli:main"
 demo-backend = "load_balancer.demo_backend:main"
 
+[tool.setuptools]
+package-dir = {"" = "backend/src"}
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
+
 [tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
+pythonpath = ["backend/src"]
+testpaths = ["backend/tests"]
 
 [tool.ruff]
 target-version = "py312"
+src = ["backend/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

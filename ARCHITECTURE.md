@@ -60,9 +60,11 @@ dashboard query service. This keeps writes on the proxy request path small while
 allowing the JSON schema to evolve separately from Prometheus labels. The state
 is intentionally process-local and resets on restart in this first iteration.
 
-Static frontend hosting and browser concerns such as cache policy, CORS, and
-authentication remain deferred. They should not be added to upstream transport
-or routing policy.
+The React application in `frontend/` depends only on the dashboard JSON
+contract. Its Vite development proxy keeps browser configuration out of the
+Python request path. Production static hosting, authentication, and operator
+controls remain deferred; those concerns should not be added to upstream
+transport or routing policy.
 
 ## Extension points
 

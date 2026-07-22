@@ -1,0 +1,3 @@
+[console_scripts]
+demo-backend = load_balancer.demo_backend:main
+load-balancer = load_balancer.cli:main
