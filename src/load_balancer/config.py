@@ -8,6 +8,12 @@ from typing import Sequence
 from urllib.parse import urlsplit
 
 from load_balancer.routing import Backend
+from load_balancer.validation import (
+    non_negative_integer_argument,
+    port_argument,
+    positive_float_argument,
+    positive_integer_argument,
+)
 
 DEFAULT_BACKENDS = (
     Backend("backend-a", "http://127.0.0.1:9001"),
@@ -54,54 +60,6 @@ def backend_argument(value: str) -> Backend:
             "backend must use NAME=http://HOST:PORT format"
         )
     return Backend(name.strip(), url.rstrip("/"))
-
-
-def port_argument(value: str) -> int:
-    """Parse a valid TCP port number."""
-
-    try:
-        port = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("port must be an integer") from error
-    if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
-    return port
-
-
-def positive_float_argument(value: str) -> float:
-    """Parse a positive number of seconds."""
-
-    try:
-        number = float(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("value must be a number") from error
-    if number <= 0:
-        raise argparse.ArgumentTypeError("value must be greater than zero")
-    return number
-
-
-def positive_integer_argument(value: str) -> int:
-    """Parse a positive whole number."""
-
-    try:
-        number = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("value must be an integer") from error
-    if number <= 0:
-        raise argparse.ArgumentTypeError("value must be greater than zero")
-    return number
-
-
-def non_negative_integer_argument(value: str) -> int:
-    """Parse a whole number that may be zero."""
-
-    try:
-        number = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("value must be an integer") from error
-    if number < 0:
-        raise argparse.ArgumentTypeError("value must be zero or greater")
-    return number
 
 
 def health_path_argument(value: str) -> str:

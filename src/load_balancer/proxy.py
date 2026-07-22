@@ -3,56 +3,40 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
-from http.client import HTTPConnection, HTTPException, HTTPResponse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler
 from time import perf_counter
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 from prometheus_client import CONTENT_TYPE_LATEST
 
+from load_balancer.control_plane import ControlPlaneService
+from load_balancer.http_framing import (
+    RequestFramingError,
+    request_content_length,
+)
 from load_balancer.metrics import LoadBalancerMetrics
+from load_balancer.observability import ProxyObserver
+from load_balancer.response import ResponseRelay, forwarded_response_headers
 from load_balancer.routing import Backend, BackendPool
+from load_balancer.server import GracefulThreadingHTTPServer
+from load_balancer.upstream import (
+    UpstreamFailure,
+    UpstreamRequest,
+    UpstreamTransport,
+)
 
-HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-}
-FORWARDED_HEADERS = {
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-}
 ADMIN_BACKENDS_PATH = "/admin/backends"
 METRICS_PATH = "/metrics"
-REQUEST_LOGGER = logging.getLogger("load_balancer.requests")
-ADMIN_LOGGER = logging.getLogger("load_balancer.admin")
 RETRYABLE_METHODS = {"GET"}
 RETRYABLE_OUTCOMES = {"backend_connect_timeout", "backend_connection_failed"}
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
-RESPONSE_CHUNK_SIZE = 64 * 1024
 
 
-class UpstreamFailure(Exception):
-    """Carry a safe operational outcome from upstream communication."""
-
-    def __init__(self, outcome: str) -> None:
-        super().__init__(outcome)
-        self.outcome = outcome
-
-
-class ProxyHTTPServer(ThreadingHTTPServer):
+class ProxyHTTPServer(GracefulThreadingHTTPServer):
     """Threaded HTTP server that waits for active requests during close."""
-
-    daemon_threads = False
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
@@ -61,11 +45,12 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     pool: BackendPool
     metrics: LoadBalancerMetrics
-    upstream_connect_timeout = 2.0
-    upstream_response_timeout = 2.0
+    observer: ProxyObserver
+    control_plane: ControlPlaneService
+    upstream_transport: UpstreamTransport
+    response_relay: ResponseRelay
     max_retries = 1
     max_request_body_bytes = 1_048_576
-    max_response_body_bytes = 1_048_576
 
     def do_GET(self) -> None:
         """Forward one GET request or return a controlled gateway error."""
@@ -153,56 +138,19 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def _content_length(self, method: str, *, allow_body: bool) -> int | None:
         """Validate supported HTTP/1.1 request framing and return its length."""
 
-        if self.headers.get("Transfer-Encoding") is not None:
-            self._reject_request(
-                method,
-                501,
-                b"Transfer-Encoding is not supported\n",
-                "unsupported_transfer_encoding",
-            )
-            return None
-
-        raw_lengths = self.headers.get_all("Content-Length", [])
-        if len(raw_lengths) > 1:
-            self._reject_request(
-                method,
-                400,
-                b"Multiple Content-Length headers are not supported\n",
-                "ambiguous_content_length",
-            )
-            return None
-
-        raw_length = raw_lengths[0] if raw_lengths else "0"
         try:
-            content_length = int(raw_length)
-        except ValueError:
+            return request_content_length(
+                self.headers,
+                allow_body=allow_body,
+            )
+        except RequestFramingError as error:
             self._reject_request(
                 method,
-                400,
-                b"Invalid Content-Length header\n",
-                "invalid_content_length",
+                error.status,
+                error.body,
+                error.outcome,
             )
             return None
-
-        if content_length < 0:
-            self._reject_request(
-                method,
-                400,
-                b"Invalid Content-Length header\n",
-                "invalid_content_length",
-            )
-            return None
-
-        if not allow_body and content_length > 0:
-            self._reject_request(
-                method,
-                400,
-                b"Request body is not supported for this method\n",
-                "unsupported_request_body",
-            )
-            return None
-
-        return content_length
 
     def _reject_request(
         self,
@@ -274,10 +222,10 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if last_failure is not None and failed_backend is not None:
-                self.metrics.record_retry(
+                self.observer.record_retry(
                     method,
                     last_failure.outcome,
-                    failed_backend.name,
+                    failed_backend,
                 )
             attempted_backends.add(backend.name)
             try:
@@ -358,13 +306,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         try:
             self.send_response(status, reason)
-            for name, value in headers:
-                lowered = name.lower()
-                if (
-                    lowered not in HOP_BY_HOP_HEADERS
-                    and lowered not in {"content-length", "x-request-id"}
-                ):
-                    self.send_header(name, value)
+            for name, value in forwarded_response_headers(headers):
+                self.send_header(name, value)
             self.send_header("Content-Length", str(content_length))
             self.send_header("X-Request-Id", request_id)
             self.end_headers()
@@ -412,150 +355,24 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     ) -> tuple[int, str | None]:
         """Send a request upstream and relay its bounded response."""
 
-        target = urlsplit(backend.url)
-        if target.scheme != "http" or target.hostname is None:
-            raise ValueError(f"unsupported backend URL: {backend.url}")
-
-        connection = HTTPConnection(
-            target.hostname,
-            target.port or 80,
-            timeout=self.upstream_connect_timeout,
+        request = UpstreamRequest(
+            method=method,
+            path=self.path,
+            body=body,
+            headers=tuple(self.headers.items()),
+            client_ip=self.client_address[0],
+            original_host=self.headers.get("Host"),
+            request_id=request_id,
         )
-        headers = {
-            name: value
-            for name, value in self.headers.items()
-            if name.lower() not in HOP_BY_HOP_HEADERS
-            and name.lower() not in {"host", "content-length"}
-            and name.lower() not in FORWARDED_HEADERS
-            and name.lower() != "x-request-id"
-        }
-        headers["Host"] = target.netloc
-        headers["X-Forwarded-For"] = self.client_address[0]
-        original_host = self.headers.get("Host")
-        if original_host is not None:
-            headers["X-Forwarded-Host"] = original_host
-        headers["X-Forwarded-Proto"] = "http"
-        headers["X-Request-Id"] = request_id
-
-        try:
-            try:
-                connection.connect()
-            except TimeoutError as error:
-                raise UpstreamFailure("backend_connect_timeout") from error
-            except (OSError, HTTPException) as error:
-                raise UpstreamFailure("backend_connection_failed") from error
-
-            if connection.sock is None:
-                raise UpstreamFailure("backend_connection_failed")
-            connection.sock.settimeout(self.upstream_response_timeout)
-            try:
-                connection.request(method, self.path, body=body, headers=headers)
-                response = connection.getresponse()
-                return self._relay_upstream_response(response, request_id)
-            except TimeoutError as error:
-                raise UpstreamFailure("backend_response_timeout") from error
-            except (OSError, HTTPException) as error:
-                raise UpstreamFailure("backend_response_failed") from error
-        finally:
-            connection.close()
-
-    def _relay_upstream_response(
-        self,
-        response: HTTPResponse,
-        request_id: str,
-    ) -> tuple[int, str | None]:
-        """Stream framed responses and safely buffer responses without a length."""
-
-        status = response.status
-        reason = response.reason
-        headers = response.getheaders()
-        has_no_body = 100 <= status < 200 or status in {204, 304}
-        if has_no_body:
-            content_length = 0
-        elif response.chunked:
-            content_length = None
-        else:
-            content_length = self._response_content_length(headers)
-
-        if content_length is None:
-            response_body = response.read(self.max_response_body_bytes + 1)
-            if len(response_body) > self.max_response_body_bytes:
-                raise UpstreamFailure("backend_response_too_large")
-            if not self._send_upstream_headers(
-                status,
-                reason,
-                headers,
-                len(response_body),
-                request_id,
-            ):
-                return status, "client_disconnected"
-            if not self._write_response_body(response_body):
-                return status, "client_disconnected"
-            return status, None
-
-        if content_length > self.max_response_body_bytes:
-            raise UpstreamFailure("backend_response_too_large")
-        if not self._send_upstream_headers(
-            status,
-            reason,
-            headers,
-            content_length,
-            request_id,
-        ):
-            return status, "client_disconnected"
-
-        remaining = content_length
-        while remaining:
-            try:
-                chunk = response.read1(min(RESPONSE_CHUNK_SIZE, remaining))
-            except TimeoutError:
-                return status, "backend_response_timeout"
-            except (OSError, HTTPException):
-                return status, "backend_response_failed"
-            if not chunk:
-                return status, "backend_response_failed"
-            if not self._write_response_body(chunk):
-                return status, "client_disconnected"
-            remaining -= len(chunk)
-        return status, None
-
-    @staticmethod
-    def _response_content_length(headers: list[tuple[str, str]]) -> int | None:
-        """Return one valid backend Content-Length or reject ambiguous framing."""
-
-        values = [
-            value
-            for name, value in headers
-            if name.lower() == "content-length"
-        ]
-        if not values:
-            return None
-        if len(values) > 1:
-            raise UpstreamFailure("backend_response_failed")
-        try:
-            content_length = int(values[0])
-        except ValueError as error:
-            raise UpstreamFailure("backend_response_failed") from error
-        if content_length < 0:
-            raise UpstreamFailure("backend_response_failed")
-        return content_length
+        with self.upstream_transport.send(backend, request) as response:
+            result = self.response_relay.relay(response, request_id, self)
+        return result.status, result.outcome
 
     def _send_backend_snapshot(self) -> None:
         """Return the current backend state without changing routing."""
 
         body = json.dumps(
-            [
-                {
-                    "name": status.backend.name,
-                    "url": status.backend.url,
-                    "healthy": status.healthy,
-                    "enabled": status.enabled,
-                    "draining": status.draining,
-                    "drained": status.draining and status.active_requests == 0,
-                    "active_requests": status.active_requests,
-                }
-                for status in self.pool.snapshot()
-            ]
+            [view.as_dict() for view in self.control_plane.list_backends()]
         ).encode()
         self._send_body(200, body, content_type="application/json")
 
@@ -576,40 +393,13 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         """Apply one operator routing action and return the resulting state."""
 
         try:
-            if action == "drain":
-                self.pool.begin_drain(name)
-            else:
-                self.pool.set_enabled(name, enabled=action == "enable")
+            view = self.control_plane.apply_backend_action(name, action)
         except KeyError:
             self._send_body(404, b"Unknown backend\n")
             return
 
-        status = next(
-            status for status in self.pool.snapshot() if status.backend.name == name
-        )
-        body = json.dumps(
-            {
-                "name": status.backend.name,
-                "healthy": status.healthy,
-                "enabled": status.enabled,
-                "draining": status.draining,
-                "drained": status.draining and status.active_requests == 0,
-                "active_requests": status.active_requests,
-            }
-        ).encode()
+        body = json.dumps(view.as_dict(include_url=False)).encode()
         self._send_body(200, body, content_type="application/json")
-        ADMIN_LOGGER.info(
-            json.dumps(
-                {
-                    "event": "backend_operator_state_changed",
-                    "backend": name,
-                    "action": action,
-                    "enabled": status.enabled,
-                    "draining": status.draining,
-                },
-                separators=(",", ":"),
-            )
-        )
 
     def _send_body(
         self,
@@ -643,29 +433,14 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     ) -> None:
         """Record metrics and write one log for a completed proxy request."""
 
-        duration_seconds = perf_counter() - started_at
-        backend_name = backend.name if backend is not None else None
-        self.metrics.record(
+        self.observer.record_completion(
             method=method,
+            path=self.path,
             status=status,
+            backend=backend,
             outcome=outcome,
-            backend=backend_name,
-            duration_seconds=duration_seconds,
-        )
-        REQUEST_LOGGER.info(
-            json.dumps(
-                {
-                    "event": "proxy_request_completed",
-                    "method": method,
-                    "path": self.path,
-                    "status": status,
-                    "backend": backend_name,
-                    "outcome": outcome,
-                    "request_id": request_id,
-                    "duration_ms": round(duration_seconds * 1000, 3),
-                },
-                separators=(",", ":"),
-            )
+            started_at=started_at,
+            request_id=request_id,
         )
 
     def _request_id(self) -> str:
@@ -690,20 +465,31 @@ def create_proxy_server(
     max_request_body_bytes: int = 1_048_576,
     max_response_body_bytes: int = 1_048_576,
     metrics: LoadBalancerMetrics | None = None,
+    control_plane: ControlPlaneService | None = None,
+    observer: ProxyObserver | None = None,
+    upstream_transport: UpstreamTransport | None = None,
+    response_relay: ResponseRelay | None = None,
 ) -> ProxyHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
 
+    proxy_metrics = metrics or LoadBalancerMetrics()
     handler_class = type(
         "ConfiguredProxyRequestHandler",
         (ProxyRequestHandler,),
         {
             "pool": pool,
-            "metrics": metrics or LoadBalancerMetrics(),
-            "upstream_connect_timeout": upstream_connect_timeout,
-            "upstream_response_timeout": upstream_response_timeout,
+            "metrics": proxy_metrics,
+            "observer": observer or ProxyObserver(proxy_metrics),
+            "control_plane": control_plane or ControlPlaneService(pool),
+            "upstream_transport": upstream_transport or UpstreamTransport(
+                connect_timeout=upstream_connect_timeout,
+                response_timeout=upstream_response_timeout,
+                connection_factory=HTTPConnection,
+            ),
+            "response_relay": response_relay
+            or ResponseRelay(max_response_body_bytes),
             "max_retries": max_retries,
             "max_request_body_bytes": max_request_body_bytes,
-            "max_response_body_bytes": max_response_body_bytes,
         },
     )
     return ProxyHTTPServer(address, handler_class)

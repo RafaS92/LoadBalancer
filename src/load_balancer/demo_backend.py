@@ -6,11 +6,13 @@ import argparse
 import json
 import os
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Sequence
 from urllib.parse import urlsplit
 
-from load_balancer.config import port_argument, positive_integer_argument
+from load_balancer.lifecycle import run_until_shutdown
+from load_balancer.server import GracefulThreadingHTTPServer
+from load_balancer.validation import port_argument, positive_integer_argument
 
 DEFAULT_MAX_BODY_BYTES = 1_048_576
 
@@ -71,10 +73,8 @@ def parse_demo_settings(
     )
 
 
-class DemoBackendServer(ThreadingHTTPServer):
+class DemoBackendServer(GracefulThreadingHTTPServer):
     """Demo server that waits for active request threads when closing."""
-
-    daemon_threads = False
 
 
 class DemoBackendHandler(BaseHTTPRequestHandler):
@@ -200,12 +200,7 @@ def main() -> None:
     )
     host, port = server.server_address
     print(f"{settings.name} listening on http://{host}:{port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    run_until_shutdown(server, thread_name=f"{settings.name}-server")
 
 
 if __name__ == "__main__":

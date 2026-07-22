@@ -19,7 +19,7 @@ dev = [
 ]
 
 [project.scripts]
-load-balancer = "load_balancer.app:main"
+load-balancer = "load_balancer.cli:main"
 demo-backend = "load_balancer.demo_backend:main"
 
 [tool.pytest.ini_options]

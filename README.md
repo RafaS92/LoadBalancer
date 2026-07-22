@@ -73,7 +73,14 @@ concepts behind a large framework.
   outside this project's first version.
 - **Service mesh:** Manages service-to-service communication across many
   applications, commonly using a proxy beside each service. This project is one
-  centralized entry point, not a mesh.
+centralized entry point, not a mesh.
+
+## Architecture
+
+The implementation separates routing policy, control-plane use cases, HTTP
+adapters, upstream transport, response delivery, observability, and process
+lifecycle. See [ARCHITECTURE.md](ARCHITECTURE.md) for the dependency map,
+extension points, and the intended frontend integration boundary.
 
 ## Definition of done
 
