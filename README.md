@@ -274,8 +274,9 @@ npm run dev
 Open `http://127.0.0.1:5173`. Vite forwards `/api` requests to the load balancer
 on port 8080 during development. The page refreshes the snapshot every five
 seconds and displays summary totals, backend state, and recent requests. It has
-no operator actions in this checkpoint. Run `npm run build` to type-check the
-frontend and create a production bundle in `frontend/dist`.
+no operator actions in this checkpoint. Run `npm test` for the component suite.
+Run `npm run build` to type-check the frontend and create a production bundle
+in `frontend/dist`.
 
 The proxy accepts only unambiguous `Content-Length` request framing. Requests
 using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are
