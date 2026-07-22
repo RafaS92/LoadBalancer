@@ -189,6 +189,20 @@ If `make docker-up` fails, run `make docker-ps` and `make docker-logs`. A clear
 installed. Port allocation errors mean ports 3000 or 8080 are already in use;
 use the overrides above or stop the conflicting local process.
 
+## Continuous integration
+
+GitHub Actions runs the same quality and integration boundaries on every push
+and pull request. The application-quality job installs cached Python and npm
+dependencies, lints and tests the backend, tests the frontend, and creates the
+production frontend bundle. After it passes, the Docker integration job
+validates Compose, builds both images with reusable BuildKit caches, starts the
+five-service stack, and runs the routing failure-and-recovery smoke test.
+
+Container logs are printed when the integration job fails, and Compose cleanup
+runs even after a failed step. The workflow can also be started manually from
+the GitHub Actions page through its `workflow_dispatch` trigger. See
+`.github/workflows/ci.yml` for the executable pipeline definition.
+
 Custom addresses use repeatable `--backend` arguments:
 
 ```shell

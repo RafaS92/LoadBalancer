@@ -82,10 +82,14 @@ collect_backends() {
   local index response backend names=""
 
   for ((index = 1; index <= request_count; index += 1)); do
-    response=$(curl --fail --silent --show-error --max-time 5 \
-      "${LOAD_BALANCER_URL}/${path_prefix}/${index}")
-    backend=$(printf '%s' "${response}" | python3 -c \
-      'import json, sys; print(json.load(sys.stdin)["backend"])')
+    if ! response=$(curl --fail --silent --show-error --max-time 5 \
+      "${LOAD_BALANCER_URL}/${path_prefix}/${index}"); then
+      fail "routing request ${path_prefix}/${index} failed"
+    fi
+    if ! backend=$(printf '%s' "${response}" | python3 -c \
+      'import json, sys; print(json.load(sys.stdin)["backend"])'); then
+      fail "routing request ${path_prefix}/${index} returned invalid JSON"
+    fi
     names+=" ${backend}"
   done
 
@@ -108,6 +112,9 @@ assert_not_seen() {
 
 wait_for_url "load balancer" "${LOAD_BALANCER_URL}/api/v1/dashboard"
 wait_for_url "frontend" "${FRONTEND_URL}/health"
+wait_for_backend_health backend-a true
+wait_for_backend_health backend-b true
+wait_for_backend_health backend-c true
 
 frontend_html=$(curl --fail --silent --show-error "${FRONTEND_URL}/")
 [[ ${frontend_html} == *'<div id="root"></div>'* ]] \

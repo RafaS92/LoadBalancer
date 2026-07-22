@@ -1,0 +1,109 @@
+name: Continuous integration
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+
+jobs:
+  quality:
+    name: Application quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install backend dependencies
+        run: make backend-install
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Lint the backend
+        run: make backend-lint
+
+      - name: Test the backend
+        run: make backend-test
+
+      - name: Test the frontend
+        run: make frontend-test
+
+      - name: Build the frontend
+        run: make frontend-build
+
+  docker:
+    name: Docker integration
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
+      - name: Validate the Compose configuration
+        run: docker compose -f compose.yaml config --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the backend image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: backend/Dockerfile
+          tags: learning-load-balancer-backend:local
+          load: true
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build the frontend image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: frontend/Dockerfile
+          tags: learning-load-balancer-frontend:local
+          load: true
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Start the application
+        run: docker compose -f compose.yaml up --detach --wait --no-build
+
+      - name: Run the end-to-end smoke test
+        run: make docker-smoke
+
+      - name: Show container logs after a failure
+        if: failure()
+        run: docker compose -f compose.yaml logs --no-color
+
+      - name: Stop the application
+        if: always()
+        run: docker compose -f compose.yaml down --remove-orphans
