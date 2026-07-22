@@ -100,12 +100,11 @@ export function App() {
     <main>
       <header className="masthead">
         <div>
-          <p className="eyebrow">Relay / operations surface</p>
           <h1>Traffic, at a glance.</h1>
         </div>
         <div className={`connection ${error ? "connection-error" : ""}`}>
           <span className="pulse" aria-hidden="true" />
-          <span>{error ? "Connection interrupted" : "Live · 5s refresh"}</span>
+          <span>{error ? "Connection interrupted" : "Live"}</span>
         </div>
       </header>
 
