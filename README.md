@@ -234,6 +234,21 @@ with a valid `Content-Length` are rejected before delivery when declared above
 the limit and otherwise streamed in 64 KiB chunks. Responses without a usable
 length remain bounded-buffered so the proxy can calculate safe downstream
 framing before sending headers.
+
+The frontend-facing read API is available from one read-only endpoint:
+
+```shell
+curl http://127.0.0.1:8080/api/v1/dashboard
+```
+
+It returns a JSON snapshot with `generated_at`, a `summary`, backend state and
+traffic aggregates in `backends`, and a bounded `recent_requests` list. The
+response is marked `Cache-Control: no-store`. This first version intentionally
+supports only `GET`; `POST`, `PUT`, `PATCH`, and `DELETE` are not part of the
+frontend API. Traffic history is held in memory by one load-balancer process and
+resets when that process restarts. No frontend application is included in this
+checkpoint.
+
 The proxy accepts only unambiguous `Content-Length` request framing. Requests
 using `Transfer-Encoding`, duplicate content lengths, or a body on `GET` are
 rejected and disconnected before backend selection, preventing unread bytes

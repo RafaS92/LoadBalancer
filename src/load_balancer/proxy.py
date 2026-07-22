@@ -13,6 +13,7 @@ from uuid import uuid4
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from load_balancer.control_plane import ControlPlaneService
+from load_balancer.dashboard import DashboardReadModel, DashboardService
 from load_balancer.http_framing import (
     RequestFramingError,
     request_content_length,
@@ -30,6 +31,7 @@ from load_balancer.upstream import (
 
 ADMIN_BACKENDS_PATH = "/admin/backends"
 METRICS_PATH = "/metrics"
+DASHBOARD_PATH = "/api/v1/dashboard"
 RETRYABLE_METHODS = {"GET"}
 RETRYABLE_OUTCOMES = {"backend_connect_timeout", "backend_connection_failed"}
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -49,6 +51,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     control_plane: ControlPlaneService
     upstream_transport: UpstreamTransport
     response_relay: ResponseRelay
+    dashboard: DashboardService
     max_retries = 1
     max_request_body_bytes = 1_048_576
 
@@ -66,6 +69,9 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
                 self.metrics.render(),
                 content_type=CONTENT_TYPE_LATEST,
             )
+            return
+        if urlsplit(self.path).path == DASHBOARD_PATH:
+            self._send_dashboard_snapshot()
             return
         self._proxy_request("GET")
 
@@ -177,7 +183,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def _is_internal_path(self) -> bool:
         """Return whether the current target belongs to the local control plane."""
 
-        return urlsplit(self.path).path in {ADMIN_BACKENDS_PATH, METRICS_PATH}
+        return urlsplit(self.path).path in {
+            ADMIN_BACKENDS_PATH,
+            METRICS_PATH,
+            DASHBOARD_PATH,
+        }
 
     def _proxy_request(self, method: str, body: bytes | None = None) -> None:
         """Select a backend and relay one supported HTTP request."""
@@ -376,6 +386,20 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         ).encode()
         self._send_body(200, body, content_type="application/json")
 
+    def _send_dashboard_snapshot(self) -> None:
+        """Return the frontend-facing operational read model."""
+
+        body = json.dumps(
+            self.dashboard.snapshot(),
+            separators=(",", ":"),
+        ).encode()
+        self._send_body(
+            200,
+            body,
+            content_type="application/json",
+            cache_control="no-store",
+        )
+
     def _parse_backend_action(self) -> tuple[str, str] | None:
         """Parse an enable, disable, or drain backend action."""
 
@@ -408,6 +432,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         *,
         content_type: str = "text/plain; charset=utf-8",
         request_id: str | None = None,
+        cache_control: str | None = None,
     ) -> None:
         """Send a small response with an explicit content type and body length."""
 
@@ -417,6 +442,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             if request_id is not None:
                 self.send_header("X-Request-Id", request_id)
+            if cache_control is not None:
+                self.send_header("Cache-Control", cache_control)
             self.end_headers()
             self.wfile.write(body)
         except ConnectionError:
@@ -469,18 +496,30 @@ def create_proxy_server(
     observer: ProxyObserver | None = None,
     upstream_transport: UpstreamTransport | None = None,
     response_relay: ResponseRelay | None = None,
+    dashboard: DashboardService | None = None,
 ) -> ProxyHTTPServer:
     """Create a threaded server whose handlers share one backend pool."""
 
     proxy_metrics = metrics or LoadBalancerMetrics()
+    proxy_control_plane = control_plane or ControlPlaneService(pool)
+    dashboard_read_model = DashboardReadModel()
+    proxy_observer = observer or ProxyObserver(
+        proxy_metrics,
+        dashboard_read_model,
+    )
+    proxy_dashboard = dashboard or DashboardService(
+        proxy_control_plane,
+        dashboard_read_model,
+    )
     handler_class = type(
         "ConfiguredProxyRequestHandler",
         (ProxyRequestHandler,),
         {
             "pool": pool,
             "metrics": proxy_metrics,
-            "observer": observer or ProxyObserver(proxy_metrics),
-            "control_plane": control_plane or ControlPlaneService(pool),
+            "observer": proxy_observer,
+            "control_plane": proxy_control_plane,
+            "dashboard": proxy_dashboard,
             "upstream_transport": upstream_transport or UpstreamTransport(
                 connect_timeout=upstream_connect_timeout,
                 response_timeout=upstream_response_timeout,

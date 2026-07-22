@@ -385,6 +385,28 @@ def test_metrics_endpoint_exposes_request_count_and_latency() -> None:
     assert "load_balancer_proxy_request_duration_seconds_count" in metrics
 
 
+def test_dashboard_endpoint_exposes_frontend_read_model() -> None:
+    upstream = backend_server("backend-a")
+    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
+    proxy = create_proxy_server(("127.0.0.1", 0), pool)
+
+    with running_server(upstream), running_server(proxy):
+        with urlopen(f"{proxy_url(proxy)}/items") as response:
+            assert response.status == 200
+        with urlopen(f"{proxy_url(proxy)}/api/v1/dashboard") as response:
+            payload = json.load(response)
+            cache_control = response.headers["Cache-Control"]
+
+    assert cache_control == "no-store"
+    assert payload["summary"]["backends_total"] == 1
+    assert payload["summary"]["healthy_backends"] == 1
+    assert payload["summary"]["requests_total"] == 1
+    assert payload["summary"]["failures_total"] == 0
+    assert payload["backends"][0]["name"] == "backend-a"
+    assert payload["backends"][0]["requests_total"] == 1
+    assert payload["recent_requests"][0]["path"] == "/items"
+
+
 def test_response_timeout_returns_502_and_releases_backend(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

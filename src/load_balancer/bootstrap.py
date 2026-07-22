@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from load_balancer.config import Settings
 from load_balancer.control_plane import ControlPlaneService
+from load_balancer.dashboard import DashboardReadModel, DashboardService
 from load_balancer.health import HealthChecker
 from load_balancer.metrics import LoadBalancerMetrics
 from load_balancer.observability import ProxyObserver
@@ -23,6 +24,7 @@ class LoadBalancerApplication:
     health_checker: HealthChecker
     control_plane: ControlPlaneService
     metrics: LoadBalancerMetrics
+    dashboard: DashboardService
 
 
 def build_application(settings: Settings) -> LoadBalancerApplication:
@@ -31,7 +33,9 @@ def build_application(settings: Settings) -> LoadBalancerApplication:
     pool = create_pool(list(settings.backends), settings.strategy)
     metrics = LoadBalancerMetrics()
     control_plane = ControlPlaneService(pool)
-    observer = ProxyObserver(metrics)
+    dashboard_read_model = DashboardReadModel()
+    dashboard = DashboardService(control_plane, dashboard_read_model)
+    observer = ProxyObserver(metrics, dashboard_read_model)
     upstream_transport = UpstreamTransport(
         connect_timeout=settings.upstream_connect_timeout,
         response_timeout=settings.upstream_response_timeout,
@@ -59,10 +63,12 @@ def build_application(settings: Settings) -> LoadBalancerApplication:
         observer=observer,
         upstream_transport=upstream_transport,
         response_relay=response_relay,
+        dashboard=dashboard,
     )
     return LoadBalancerApplication(
         server,
         health_checker,
         control_plane,
         metrics,
+        dashboard,
     )

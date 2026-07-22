@@ -15,7 +15,10 @@ flowchart TD
     Proxy --> Response["response.py"]
     Proxy --> Framing["http_framing.py"]
     Proxy --> Observer["observability.py"]
+    Proxy --> Dashboard["dashboard.py read API"]
     Control --> Routing["routing.py"]
+    Dashboard --> Control
+    Observer --> Dashboard
     Health --> Routing
     Observer --> Metrics["metrics.py"]
     Health --> Metrics
@@ -44,20 +47,22 @@ Dependencies point toward stable policies:
 ## Frontend integration
 
 A future frontend should not import `ProxyRequestHandler` or inspect
-`RoundRobinPool` internals. Add a frontend/API adapter that depends on
-`ControlPlaneService` and frontend-specific read models. The existing
-`BackendView` is the stable backend-state contract and already includes health,
+`RoundRobinPool` internals. The `DashboardService` in `dashboard.py` is the
+frontend-facing query boundary: it combines `ControlPlaneService` backend state
+with traffic aggregates from `DashboardReadModel`. `GET /api/v1/dashboard`
+serializes that snapshot without exposing routing or Prometheus internals. The
+existing `BackendView` remains the backend-state contract and includes health,
 operator state, draining state, and active requests.
 
-Request-rate and latency charts should use a dedicated query/read-model service
-fed by `ProxyObserver`; they should not parse Prometheus text or access metric
-collector internals. `bootstrap.py` should wire that service into both the
-observer and the future API adapter. This keeps writes on the proxy request path
-small while allowing the UI schema to evolve separately from Prometheus labels.
+`ProxyObserver` feeds the thread-safe, bounded read model after completed
+requests and retries. `bootstrap.py` wires the same model into the observer and
+dashboard query service. This keeps writes on the proxy request path small while
+allowing the JSON schema to evolve separately from Prometheus labels. The state
+is intentionally process-local and resets on restart in this first iteration.
 
 Static frontend hosting and browser concerns such as cache policy, CORS, and
-authentication belong in the future frontend adapter. They should not be added
-to upstream transport or routing policy.
+authentication remain deferred. They should not be added to upstream transport
+or routing policy.
 
 ## Extension points
 
