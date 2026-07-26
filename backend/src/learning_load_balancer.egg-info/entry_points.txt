@@ -1,3 +1,0 @@
-[console_scripts]
-demo-backend = load_balancer.adapters.inbound.http.demo:main
-load-balancer = load_balancer.adapters.inbound.cli:main
