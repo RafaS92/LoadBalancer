@@ -1,10 +1,3 @@
-# Project flow: understanding and demonstrating the load balancer
-
-This document is a learning space for understanding the entire project and
-explaining it to other people. It starts with the central idea—a load
-balancer—and then connects each concept to the exact area of the code where it
-happens.
-
 The shortest explanation of the project is:
 
 > A client sends a request to one stable address. The load balancer chooses one
@@ -133,13 +126,19 @@ Here is what each step means:
    backend. Invalid or ambiguous requests are rejected early.
 3. The handler preserves a valid `X-Request-Id` or generates a new one.
 4. It creates an `UpstreamRequest` DTO and calls `ProxyService.execute()`.
+   A DTO, or **Data Transfer Object**, is a simple object that carries related
+   data between parts of the application without making business decisions.
 5. `ProxyService` asks the backend pool to acquire an eligible backend.
 6. The pool selects a backend and increments its active-request count as one
    atomic operation.
 7. `UpstreamTransport` connects to that backend, replaces trusted forwarding
    headers, and sends the request.
+   It handles **how to communicate** with the selected backend, including HTTP
+   connections, timeouts, request headers, and connection-failure classification.
 8. `ResponseRelay` preserves the backend status, safe headers, and response
    body while enforcing response limits.
+   It safely transfers the backend's response back to the client and detects
+   problems such as oversized or incomplete responses and client disconnections.
 9. A `finally` block releases the backend on success, timeout, failure, or
    client disconnect.
 10. `ProxyService` publishes a typed completion event. That one event feeds
@@ -392,8 +391,6 @@ It is also covered end to end in `backend/tests/test_proxy.py`.
 
 ## 9. Idempotency
 
-The correct spelling is **idempotency**.
-
 An operation is idempotent when performing the same operation more than once
 has the same intended effect as performing it once.
 
@@ -484,7 +481,20 @@ out to:
 This keeps `ProxyService` independent of Prometheus, JSON, logging libraries,
 and React. It only publishes a meaningful business event.
 
-To follow logs in Docker:
+For a presentation, the clearest way to see logs is in the
+[Docker Desktop Containers view](https://docs.docker.com/desktop/use-desktop/container/):
+
+1. Open Docker Desktop.
+2. Select **Containers**.
+3. Expand the `load-balancer` Compose application.
+4. Select the `load-balancer` container.
+5. Open its **Logs** view.
+
+New JSON events appear as requests are made. Docker Desktop also lets you
+search the log output for values such as `proxy_request_completed`,
+`backend_health_changed`, or a specific request ID.
+
+The terminal equivalent remains useful as a fallback:
 
 ```bash
 docker compose logs --follow load-balancer
@@ -654,6 +664,53 @@ The demo backends use the same Python image but receive different names. Their
 JSON responses identify which backend handled each request, making the routing
 algorithm visible.
 
+### Why Docker fits this project
+
+Docker is not required to implement the load-balancing algorithm, and it is not
+automatically better for every application. It is useful here because the
+behavior being demonstrated depends on several independent processes and a
+realistic network boundary.
+
+The main advantages for this project are:
+
+1. **Independent servers:** `backend-a`, `backend-b`, and `backend-c` run as
+   separate containers. One can stop or fail without terminating the other
+   backends or the load balancer. This makes failure isolation visible.
+2. **Repeatable environment:** each container starts with the same packaged
+   application and dependencies, reducing differences between computers.
+3. **Easy replication:** Compose creates three backend instances from the same
+   image with different names. They are separate server instances, not three
+   different backend implementations.
+4. **Real service networking:** containers communicate through the private
+   Compose network using DNS names such as `backend-a`. Only the frontend and
+   load-balancer entry points are exposed to the host.
+5. **Declarative startup:** `compose.yaml` records the services, commands,
+   ports, network, health checks, and startup dependencies in one place.
+6. **Operational demonstration:** Docker Desktop makes it easy to inspect
+   health and logs or deliberately stop and restart one backend during the
+   presentation.
+7. **Simple cleanup:** the complete environment can be created and removed
+   without manually managing five long-running processes and their ports.
+
+Without Docker, the same demonstration would require starting the frontend,
+load balancer, and three backend processes separately, assigning their ports,
+keeping their dependencies consistent, and stopping them individually. Docker
+Compose turns that setup into one reproducible application topology.
+
+For a presentation, say:
+
+> “Docker lets us run each service as an isolated process with its own lifecycle
+> while connecting them through a predictable private network. The three
+> backends use the same image, but they are independent server instances. That
+> lets us stop one server, observe the load balancer remove it, and prove that
+> the rest of the application continues running. Compose also makes the entire
+> environment reproducible with one declared configuration.”
+
+Docker provides process and network isolation, but this local Compose setup is
+still a demonstration rather than a complete production platform. Production
+deployments commonly add orchestration, persistent monitoring, authentication,
+secrets management, and multiple load-balancer instances.
+
 ## 16. Important endpoints
 
 | Method and path | Purpose |
@@ -674,14 +731,43 @@ public internet.
 
 ## 17. How to test the project
 
+### Choosing a tool for sending requests
+
+`curl` is useful for automation, but it is not the clearest presentation tool.
+These are the main alternatives:
+
+| Tool | Best use | Tradeoff |
+| --- | --- | --- |
+| **Postman** | Recommended for this demo: saved requests, formatted JSON, headers, status, and response time | Requires preparing a small collection |
+| **Project dashboard** | Best visual summary of routing, health, failures, and latency | Read-only; it cannot send application or administration requests |
+| **Docker Desktop** | Best visual control of containers, health, logs, stop, and restart | It manages the runtime but is not an HTTP client |
+| **VS Code REST Client** | Keeps reproducible HTTP requests in a `.http` file next to the code | Less visual for a nontechnical audience |
+| **Bruno or Hoppscotch** | Good graphical HTTP-client alternatives to Postman | Adds another tool when Postman is already available |
+| **curl** | Best for scripts, CI, and quick terminal checks | Raw output is less polished during a presentation |
+
+Because Postman and Docker Desktop are already installed, the clearest
+presentation combination is:
+
+```text
+Postman          → send and inspect HTTP requests
+Docker Desktop   → control containers and inspect logs
+Browser dashboard → explain the whole system visually
+VS Code          → connect behavior to the implementation
+```
+
 ### Tools
 
-For the simplest full-system test, install:
+For the recommended visual demonstration, use:
 
-- Docker Desktop, or Docker Engine with Docker Compose v2;
-- `make`;
-- `curl`; and
-- Python 3, used by the Docker smoke script.
+- [Docker Desktop](https://docs.docker.com/desktop/use-desktop/container/)
+  with Docker Compose;
+- [Postman](https://learning.postman.com/docs/use/use-collections/create-collections/);
+- a browser;
+- VS Code; and
+- `make`.
+
+The automated `make docker-smoke` command additionally uses `curl` and Python 3
+on the host. They are needed by the script, not by the Postman presentation.
 
 For local development without Docker, also install:
 
@@ -743,31 +829,109 @@ metrics, logs, proxy framing, and end-to-end HTTP behavior.
 
 ## 18. A practical demo for other people
 
-This demo takes approximately 8–10 minutes. Use two terminals and one browser.
+This demo takes approximately 8–10 minutes. Its main visual workspace uses
+Postman, Docker Desktop, the React dashboard, and VS Code. The terminal is used
+only to start and clean up the complete stack.
+
+### Prepare Postman once
+
+Create a Postman collection named `Load Balancer Demo`.
+
+Add a collection variable:
+
+| Variable | Value |
+| --- | --- |
+| `baseUrl` | `http://127.0.0.1:8080` |
+
+[Current Postman versions](https://learning.postman.com/docs/use/send-requests/variables/variables/)
+use one local value by default rather than the older separate “initial” and
+“current” value fields. Open the collection's **Variables** tab, add `baseUrl`,
+and use `{{baseUrl}}` in every saved request.
+
+#### If Postman cannot connect
+
+The variable definition and request URL are different:
+
+```text
+Collection variable name:  baseUrl
+Collection variable value: http://127.0.0.1:8080
+Request URL:                {{baseUrl}}/demo
+```
+
+Check these items:
+
+1. Use `http`, not `https`.
+2. Make sure `baseUrl` has a local value and is enabled in the collection's
+   **Variables** tab.
+3. Save the request inside the same `Load Balancer Demo` collection so it can
+   access the collection variable.
+4. Hover over `{{baseUrl}}` in the URL. Postman should show the resolved value
+   `http://127.0.0.1:8080`. Red text means the variable is unresolved or empty.
+5. If using Postman in a web browser, select the
+   [Desktop Agent](https://learning.postman.com/latest-v-12/docs/getting-started/basics/about-postman-agent)
+   so the request can reach a service running on the local computer.
+6. Test the literal URL `http://127.0.0.1:8080/demo`. If the literal URL works
+   but `{{baseUrl}}/demo` fails, the problem is the variable's scope or value.
+7. Confirm the Docker Desktop `load-balancer` container is running and maps
+   host port `8080` to container port `8080`.
+
+Save these requests in the collection:
+
+| Request name | Method | URL |
+| --- | --- | --- |
+| Route request | `GET` | `{{baseUrl}}/demo` |
+| Backend snapshot | `GET` | `{{baseUrl}}/admin/backends` |
+| Dashboard JSON | `GET` | `{{baseUrl}}/api/v1/dashboard` |
+| Prometheus metrics | `GET` | `{{baseUrl}}/metrics` |
+| Disable backend C | `POST` | `{{baseUrl}}/admin/backends/backend-c/disable` |
+| Enable backend C | `POST` | `{{baseUrl}}/admin/backends/backend-c/enable` |
+
+For `Route request`, add this request header:
+
+| Header | Value |
+| --- | --- |
+| `X-Request-Id` | `postman-demo-{{$guid}}` |
+
+[`{{$guid}}` is a Postman dynamic variable](https://learning.postman.com/docs/postman/environments-and-globals/variables-list/),
+so every send receives a distinct request ID while retaining the searchable
+`postman-demo-` prefix. This keeps the demonstration realistic and makes the
+requests easy to find in Docker Desktop logs.
+
+Postman's **Pretty** JSON response view makes the selected `backend`,
+`request_id`, forwarded context, and path much easier to explain than raw
+terminal output.
 
 ### Before the presentation
 
-Run:
+Start the application from the project directory:
 
 ```bash
 make docker-up
-make docker-ps
 ```
 
-Confirm all five services say `healthy`.
+Now open Docker Desktop:
 
-Open:
+1. Go to **Containers**.
+2. Find and expand `load-balancer`.
+3. Confirm that `frontend`, `load-balancer`, `backend-a`, `backend-b`, and
+   `backend-c` are running and healthy.
+
+This view is useful at the beginning because the audience can see that the
+system really contains five separate containers.
+
+Open the React dashboard in the browser:
 
 ```text
 http://127.0.0.1:3000
 ```
 
-Keep the dashboard visible. In a second terminal, follow the load-balancer
-logs:
+Keep these four windows ready:
 
-```bash
-docker compose logs --follow load-balancer
-```
+1. the browser dashboard;
+2. the Postman collection;
+3. Docker Desktop's `load-balancer` container list; and
+4. VS Code with `FLOW.MD` and
+   `backend/src/load_balancer/domain/routing.py`.
 
 ### Part 1: introduce the stable entry point
 
@@ -776,16 +940,8 @@ Say:
 > “There are three application servers, but the client knows only one address:
 > the load balancer on port 8080.”
 
-Send repeated requests:
-
-```bash
-for number in 1 2 3 4 5 6 7 8 9; do
-  curl -s "http://127.0.0.1:8080/demo/${number}"
-  echo
-done
-```
-
-Point out the `backend` field:
+In Postman, open **Route request** and click **Send** repeatedly. Point to the
+formatted `backend` field after every response:
 
 ```text
 backend-a
@@ -797,9 +953,13 @@ backend-a
 
 Explain that this is round robin: repeated, fair rotation.
 
+For an automated visual run, Postman's Collection Runner can execute the route
+request for several iterations. Repeated manual sends are usually easier for a
+short talk because the audience can watch each routing decision.
+
 ### Part 2: connect the demo to the routing code
 
-Show:
+Switch to VS Code and show:
 
 ```text
 backend/src/load_balancer/domain/routing.py
@@ -815,7 +975,8 @@ Explain:
 
 ### Part 3: show observability
 
-Wait up to five seconds for the dashboard refresh. Point out:
+Switch to the browser dashboard. Wait up to five seconds for its next refresh,
+then point out:
 
 - total requests;
 - available backends;
@@ -824,101 +985,139 @@ Wait up to five seconds for the dashboard refresh. Point out:
 - per-backend request counts; and
 - the recent request stream.
 
-Show raw metrics:
+In Docker Desktop, select the `load-balancer` container and open **Logs**.
+Search for `postman-demo-`. Point out the backend, status, outcome,
+duration, and request ID in the structured JSON event.
 
-```bash
-curl -s http://127.0.0.1:8080/metrics
+In Postman, send **Prometheus metrics**. The response is Prometheus text rather
+than JSON. Search the response for:
+
+```text
+load_balancer_proxy_requests_total
+load_balancer_proxy_request_duration_seconds
+load_balancer_backend_healthy
 ```
 
-For a shorter view:
+Explain that one completion event feeds three different views:
 
-```bash
-curl -s http://127.0.0.1:8080/metrics \
-  | grep 'load_balancer_proxy_requests_total'
-```
-
-Point at the JSON log stream and explain that one completion event feeds the
-log, metrics, and dashboard.
+- Docker Desktop shows the individual structured log;
+- Postman shows the Prometheus metrics endpoint; and
+- the React dashboard shows a human-friendly operational summary.
 
 ### Part 4: demonstrate failure isolation
 
-Stop one backend:
+In Docker Desktop:
 
-```bash
-docker compose stop backend-a
-```
+1. Return to the expanded `load-balancer` application.
+2. Select `backend-a`.
+3. Use its **Stop** action.
+4. Keep `backend-b`, `backend-c`, `load-balancer`, and `frontend` running.
 
-After the configured failure threshold is reached, the dashboard marks A
-unhealthy. Send more traffic:
+This is clearer than hiding the failure behind a command: the audience can see
+the backend container stop while the rest of the application remains alive.
 
-```bash
-for number in 1 2 3 4 5 6; do
-  curl -s "http://127.0.0.1:8080/failure-demo/${number}"
-  echo
-done
-```
+After the configured health threshold is reached, the browser dashboard marks A
+unhealthy. In Postman, click **Send** on **Route request** several more times.
+
+In the code, `ThreadedHealthWorker.check_once()` collects the failed probe, and
+`HealthEvaluationService.apply()` identifies `backend-a` as unhealthy after the
+failure threshold and calls `BackendPool.set_health(..., healthy=False)` to
+remove it from the eligible routing set.
 
 Only B and C should appear. Say:
 
 > “The client did not change its address. Health checks changed the eligible
 > routing set, so round robin continued across the remaining healthy servers.”
 
-Restore A:
+Return to Docker Desktop and use the **Start** action for `backend-a`.
 
-```bash
-docker compose start backend-a
-```
+After two successful load-balancer probes, the dashboard marks A healthy.
+Repeated Postman requests eventually show A again.
 
-After two successful probes, A becomes healthy and rejoins rotation.
+In the `load-balancer` container logs, search for
+`backend_health_changed`. Show the transition to unhealthy and the later
+transition back to healthy.
 
 ### Part 5: demonstrate operator control
 
 Health answers “Can this backend work?” Operator state answers “Should this
 backend receive new work?”
 
-Disable C even though it is healthy:
+In Postman, send **Disable backend C**. Its formatted response shows:
 
-```bash
-curl -X POST \
-  http://127.0.0.1:8080/admin/backends/backend-c/disable
+```json
+{
+  "name": "backend-c",
+  "healthy": true,
+  "enabled": false
+}
 ```
 
-Inspect the snapshot:
+Send **Backend snapshot** and show that C is physically healthy but
+administratively disabled. Send **Route request** repeatedly and confirm that C
+does not receive traffic.
 
-```bash
-curl http://127.0.0.1:8080/admin/backends
-```
-
-Re-enable C:
-
-```bash
-curl -X POST \
-  http://127.0.0.1:8080/admin/backends/backend-c/enable
-```
+Send **Enable backend C** to restore its state.
 
 Explain that health recovery never overrides a deliberate operator disable.
 
 ### Part 6: close with retry safety
 
-Say:
+Open `backend/tests/test_proxy_service.py` in VS Code and show these two tests:
 
-> “Retries can improve availability, but retrying a write may duplicate work.
-> This project retries only GET connection failures, chooses a different
-> backend, and keeps one request ID for correlation. A request ID is not an
-> idempotency key.”
+- `test_retries_safe_failure_and_releases_every_backend`
+- `test_does_not_retry_mutating_request`
 
-The deterministic retry demonstration is the focused test:
+The first test gives the proxy a simulated sequence in which `backend-a` has a
+connection timeout and `backend-b` succeeds:
+
+```text
+GET → backend-a times out → retry backend-b → success
+```
+
+Point out that the result is `completed_after_retry`, the selected result
+backend is `backend-b`, and a `RetryAttempted` event was recorded.
+
+The second test uses the same kind of connection failure for a `POST` request:
+
+```text
+POST → backend-a times out → no retry → 502
+```
+
+Point out that the result still names `backend-a`. The proxy does not try
+`backend-b`, because the failed request may have performed its write before the
+connection problem became visible.
+
+Run both scenarios:
 
 ```bash
 make -C backend test \
   PYTEST_ARGS="-q -vv backend/tests/test_proxy_service.py -k 'retries_safe_failure or does_not_retry_mutating_request'"
 ```
 
+The two `PASSED` results prove both sides of the policy: a safe connection
+failure gets one additional attempt on a different backend, while a mutating
+request does not.
+
+Say:
+
+> “Both requests encounter the same backend connection failure. The GET safely
+> retries on backend B and succeeds. The POST returns 502 without trying another
+> backend, because repeating a write could duplicate an order, payment, or other
+> side effect. The request ID helps correlate attempts, but it does not prevent
+> duplicate work and is not an idempotency key.”
+
 ### Cleanup
+
+The most reliable cleanup remains:
 
 ```bash
 make docker-down
 ```
+
+You can also stop the Compose application from Docker Desktop when you want to
+leave its containers available for another run. Use `make docker-down` when you
+want the repository's defined, repeatable container-and-network cleanup.
 
 ## 19. Five-minute explanation script
 
