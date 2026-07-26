@@ -1,11 +1,11 @@
-name: learning-load-balancer
+name: load-balancer
 
 x-backend-build: &backend-build
   context: .
   dockerfile: backend/Dockerfile
 
 x-demo-backend: &demo-backend
-  image: learning-load-balancer-backend:local
+  image: load-balancer-backend:local
   build: *backend-build
   init: true
   expose:
@@ -63,7 +63,7 @@ services:
       - "9000"
 
   load-balancer:
-    image: learning-load-balancer-backend:local
+    image: load-balancer-backend:local
     build: *backend-build
     init: true
     command:
@@ -106,7 +106,7 @@ services:
       start_period: 2s
 
   frontend:
-    image: learning-load-balancer-frontend:local
+    image: load-balancer-frontend:local
     build:
       context: .
       dockerfile: frontend/Dockerfile
@@ -134,4 +134,4 @@ services:
 
 networks:
   application:
-    name: learning-load-balancer-network
+    name: load-balancer-network
