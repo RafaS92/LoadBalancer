@@ -7,8 +7,6 @@ the project.
 ## Core load-balancing concepts
 
 - **Load balancer:** A system that distributes client requests across multiple backend servers.
-- **Client:** The program that sends a request to the load balancer.
-- **Backend:** An application server that can handle a proxied request.
 - **Stable entry point:** The single address clients use instead of knowing every backend address.
 - **Traffic distribution:** Sharing requests across multiple backends instead of overloading one server.
 - **Availability:** Keeping the service usable when some backends are unavailable.
@@ -61,7 +59,6 @@ the project.
 ## Snapshot and state concepts
 
 - **Snapshot:** A consistent copy of state at one moment.
-- **Immutable value:** Data that cannot be changed after it is created.
 - **Consistent read:** A view whose related fields were copied from the same protected state.
 - **Live state:** Current mutable information that may change while the system is running.
 - **In-memory state:** Information stored only inside the current process.
@@ -84,16 +81,6 @@ the project.
 - **Graceful degradation:** Continuing with reduced capacity when one backend fails.
 - **Health transition event:** A record emitted when a backend crosses a health threshold.
 
-## Operator and control-plane concepts
-
-- **Data plane:** The path that handles and forwards ordinary client traffic.
-- **Control plane:** Operations that inspect or change how traffic should be routed.
-- **Enable:** Allowing a healthy backend to receive new requests.
-- **Disable:** Preventing a backend from receiving new requests by operator decision.
-- **Drain:** Stopping new assignments while allowing active requests to finish.
-- **Drained:** The state where a draining backend has no active requests remaining.
-- **Operator intent:** A human decision that remains separate from automatic health state.
-- **Administration endpoint:** A local API used to inspect or change backend state.
 
 ## Retry and idempotency concepts
 
@@ -108,38 +95,6 @@ the project.
 - **Idempotency key:** A durable application key used to prevent duplicate side effects.
 - **Request ID:** A correlation identifier for tracing one request; it is not an idempotency key.
 - **Retry safety:** Avoiding retries when the backend may already have performed unsafe work.
-
-## Timeout and failure concepts
-
-- **Connection timeout:** The time limit for establishing a connection to a backend.
-- **Response timeout:** The time limit for waiting on a connected backend's response.
-- **Failure classification:** Giving different failure causes stable names for policy and observation.
-- **`502 Bad Gateway`:** The proxy selected a backend but could not complete a valid exchange.
-- **`503 Service Unavailable`:** No healthy and enabled backend is available.
-- **`499 Client Closed Request`:** The project records that the client disconnected before completion.
-- **Client disconnect:** The client closes its connection before the response is fully delivered.
-- **Backend connection failure:** The proxy cannot establish a connection to the selected backend.
-- **Backend response failure:** The connected backend fails while returning its response.
-
-## HTTP concepts
-
-- **HTTP request:** A method, target, headers, and optional body sent by a client.
-- **HTTP response:** A status, headers, and optional body returned to a client.
-- **HTTP method:** The operation type, such as `GET`, `POST`, or `DELETE`.
-- **Status code:** A numeric result such as `200`, `400`, `502`, or `503`.
-- **Header:** Metadata sent with an HTTP request or response.
-- **Request body:** The optional payload sent by the client.
-- **Response body:** The payload returned by the backend.
-- **HTTP framing:** The rules that define where an HTTP message body begins and ends.
-- **`Content-Length`:** A header declaring the exact body size in bytes.
-- **`Transfer-Encoding`:** An alternative framing mechanism that this project rejects for requests.
-- **Ambiguous framing:** Conflicting body-length information that could desynchronize a connection.
-- **Persistent connection:** An HTTP connection that may carry more than one request.
-- **Body-size limit:** A safety boundary preventing unbounded request or response memory use.
-- **Bounded buffering:** Reading data into memory only up to a configured maximum.
-- **Chunked streaming:** Relaying a known-length response in smaller bounded pieces.
-- **Hop-by-hop header:** A header that applies to one connection and should not be forwarded.
-- **End-to-end header:** A header intended to travel through proxies to the final recipient.
 
 ## Forwarded identity concepts
 
@@ -170,20 +125,6 @@ the project.
 - **Percentile:** A value below which a percentage of measurements falls.
 - **Metric label:** A bounded dimension used to separate metric series.
 - **Cardinality:** The number of unique label combinations stored by a metrics system.
-
-## Dashboard and frontend concepts
-
-- **Dashboard:** A visual summary of traffic, backend health, failures, and latency.
-- **Dashboard snapshot:** The JSON document used to render one current dashboard view.
-- **Polling:** Requesting updated dashboard data at a fixed interval.
-- **Read-only API:** An endpoint that returns information without changing system state.
-- **`Cache-Control: no-store`:** An instruction preventing operational snapshots from being cached.
-- **React:** The library used to render the browser dashboard.
-- **Component:** A reusable React unit responsible for one part of the interface.
-- **Hook:** Reusable React behavior, such as periodically loading dashboard data.
-- **Vite:** The frontend development server and production build tool.
-- **Nginx:** The production web server that serves React and proxies `/api/`.
-- **Stale data:** The last successful snapshot shown when a later refresh fails.
 
 ## Clean architecture concepts
 

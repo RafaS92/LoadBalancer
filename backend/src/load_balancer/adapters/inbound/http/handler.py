@@ -270,34 +270,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     def close(self) -> None:
         self.close_connection = True
 
-    def _send_body(
-        self,
-        status: int,
-        body: bytes,
-        *,
-        content_type: str = "text/plain; charset=utf-8",
-        request_id: str | None = None,
-        cache_control: str | None = None,
-    ) -> None:
-        self.send_body(
-            status,
-            body,
-            content_type=content_type,
-            request_id=request_id,
-            cache_control=cache_control,
-        )
-
     def _request_id(self) -> str:
         supplied = self.headers.get("X-Request-Id")
         if supplied is not None and REQUEST_ID_PATTERN.fullmatch(supplied):
             return supplied
         return self.request_ids.new()
-
-    def _is_internal_path(self) -> bool:
-        return is_internal_path(self.path)
-
-    def _parse_backend_action(self) -> tuple[str, str] | None:
-        return parse_backend_action(self.path)
 
     def log_message(self, format: str, *args: object) -> None:
         """Suppress the base handler's duplicate access log."""

@@ -1,8 +1,9 @@
 # Learning Load Balancer
 
 This project is a production-minded HTTP/1.1 load balancer built to develop and
-demonstrate senior software engineering skills. It will be implemented in small,
-testable steps so that every design decision can be understood and explained.
+demonstrate senior software engineering skills. It is implemented in small,
+testable components so that every design decision can be understood and
+explained.
 
 ## The problem
 
@@ -79,8 +80,9 @@ centralized entry point, not a mesh.
 
 The implementation separates routing policy, control-plane use cases, HTTP
 adapters, upstream transport, response delivery, observability, and process
-lifecycle. See [ARCHITECTURE.md](ARCHITECTURE.md) for the dependency map,
-extension points, and the intended frontend integration boundary.
+lifecycle. See [FLOW.MD](FLOW.MD) for the architecture, complete request flow,
+design decisions, and presentation guide. See [CONCEPTS.md](CONCEPTS.md) for a
+compact glossary.
 
 ## Definition of done
 
@@ -268,8 +270,8 @@ should not be exposed publicly. The routing pool now tracks active requests per
 backend through matched acquire/release operations, and `/admin/backends`
 includes each count. Routing defaults to `round-robin`; passing
 `--strategy least-connections` selects the healthy backend with the lowest
-active-request count and uses round-robin ordering to break ties. The next
-health checker requires two consecutive failures before removing a backend and
+active-request count and uses round-robin ordering to break ties. The health
+checker requires two consecutive failures before removing a backend and
 two consecutive successes before restoring it by default. Either threshold is
 configurable. Each resulting state change emits a structured
 `backend_health_changed` log event. Prometheus exposes current backend health as
@@ -297,8 +299,8 @@ defaults and can be configured with `--upstream-connect-timeout` and
 `--upstream-response-timeout`. Either timeout produces a controlled `502` and
 releases the backend's active-request count. Clients still receive the same safe
 `502`, while logs and Prometheus labels distinguish connection timeouts,
-connection failures, response timeouts, and other response failures. The next
-safe retry policy gives `GET` one additional attempt by default only after a
+connection failures, response timeouts, and other response failures. The safe
+retry policy gives `GET` one additional attempt by default only after a
 connection timeout or failure, before request bytes were sent. Retries exclude
 previously attempted backends. `POST` and response-phase failures are never
 retried, preventing duplicate writes. `--max-retries 0` disables retries. The
