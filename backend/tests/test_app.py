@@ -1,7 +1,10 @@
 import unittest
 from threading import Event, Thread
 
-from load_balancer.app import project_status, serve_until_shutdown
+from load_balancer.adapters.inbound.cli import (
+    project_status,
+    serve_until_shutdown,
+)
 
 
 class ProjectStatusTest(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""Identifiable HTTP backend used by the local load-balancer demonstration."""
+"""Identifiable HTTP backend used by the local demonstration."""
 
 from __future__ import annotations
 
@@ -10,22 +10,23 @@ from http.server import BaseHTTPRequestHandler
 from typing import Sequence
 from urllib.parse import urlsplit
 
-from load_balancer.constants import (
+from load_balancer.infrastructure.defaults import (
     DEFAULT_DEMO_BACKEND_HOST,
     DEFAULT_DEMO_BACKEND_NAME,
     DEFAULT_DEMO_BACKEND_PORT,
     DEFAULT_HEALTH_PATH,
     DEFAULT_MAX_BODY_BYTES,
 )
-from load_balancer.lifecycle import run_until_shutdown
-from load_balancer.server import GracefulThreadingHTTPServer
-from load_balancer.validation import port_argument, positive_integer_argument
+from load_balancer.infrastructure.lifecycle import run_until_shutdown
+from load_balancer.infrastructure.server import GracefulThreadingHTTPServer
+from load_balancer.infrastructure.validation import (
+    port_argument,
+    positive_integer_argument,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class DemoBackendSettings:
-    """Validated settings for one demo backend instance."""
-
     name: str
     host: str
     port: int
@@ -33,8 +34,6 @@ class DemoBackendSettings:
 
 
 def non_empty_name(value: str) -> str:
-    """Return a normalized non-empty backend name."""
-
     name = value.strip()
     if not name:
         raise argparse.ArgumentTypeError("backend name must not be empty")
@@ -44,8 +43,6 @@ def non_empty_name(value: str) -> str:
 def parse_demo_settings(
     arguments: Sequence[str] | None = None,
 ) -> DemoBackendSettings:
-    """Parse CLI arguments and environment defaults for one demo backend."""
-
     parser = argparse.ArgumentParser(description="Run an identifiable demo backend")
     parser.add_argument(
         "--name",
@@ -86,43 +83,32 @@ class DemoBackendServer(GracefulThreadingHTTPServer):
 
 
 class DemoBackendHandler(BaseHTTPRequestHandler):
-    """Return health and request identity as small JSON documents."""
+    """Return health and request identity as compact JSON."""
 
     protocol_version = "HTTP/1.1"
     backend_name: str
     max_body_bytes: int
 
     def do_GET(self) -> None:
-        """Return health or request identity."""
-
         if urlsplit(self.path).path == DEFAULT_HEALTH_PATH:
             self._send_json(
                 200,
-                {
-                    "status": "ok",
-                    "backend": self.backend_name,
-                },
+                {"status": "ok", "backend": self.backend_name},
             )
             return
         self._send_identity("GET")
 
     def do_POST(self) -> None:
-        """Echo one bounded POST body with request identity."""
-
         body = self._read_body()
         if body is not None:
             self._send_identity("POST", body)
 
     def do_DELETE(self) -> None:
-        """Echo one bounded DELETE body with request identity."""
-
         body = self._read_body()
         if body is not None:
             self._send_identity("DELETE", body)
 
     def _read_body(self) -> bytes | None:
-        """Read a valid request body within the demo service's memory limit."""
-
         raw_length = self.headers.get("Content-Length", "0")
         try:
             content_length = int(raw_length)
@@ -145,8 +131,6 @@ class DemoBackendHandler(BaseHTTPRequestHandler):
         return body
 
     def _send_identity(self, method: str, body: bytes | None = None) -> None:
-        """Describe the backend and trusted proxy context for one request."""
-
         payload: dict[str, str | None] = {
             "backend": self.backend_name,
             "method": method,
@@ -161,8 +145,6 @@ class DemoBackendHandler(BaseHTTPRequestHandler):
         self._send_json(200, payload)
 
     def _send_json(self, status: int, payload: object) -> None:
-        """Send one compact JSON response."""
-
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -181,8 +163,6 @@ def create_demo_backend_server(
     *,
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
 ) -> DemoBackendServer:
-    """Create one configured demo backend server."""
-
     normalized_name = non_empty_name(name)
     if max_body_bytes <= 0:
         raise ValueError("max body bytes must be positive")
@@ -198,8 +178,6 @@ def create_demo_backend_server(
 
 
 def main() -> None:
-    """Run one demo backend until interrupted."""
-
     settings = parse_demo_settings()
     server = create_demo_backend_server(
         (settings.host, settings.port),
@@ -209,7 +187,3 @@ def main() -> None:
     host, port = server.server_address
     print(f"{settings.name} listening on http://{host}:{port}")
     run_until_shutdown(server, thread_name=f"{settings.name}-server")
-
-
-if __name__ == "__main__":
-    main()

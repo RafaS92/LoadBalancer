@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from typing import Sequence
 from urllib.parse import urlsplit
 
-from load_balancer.constants import (
-    DEFAULT_BACKENDS,
+from load_balancer.domain.models import Backend
+from load_balancer.infrastructure.defaults import (
+    DEFAULT_BACKEND_DEFINITIONS,
     DEFAULT_HEALTH_FAILURE_THRESHOLD,
     DEFAULT_HEALTH_INTERVAL,
     DEFAULT_HEALTH_PATH,
@@ -24,12 +25,15 @@ from load_balancer.constants import (
     DEFAULT_UPSTREAM_RESPONSE_TIMEOUT,
     ROUTING_STRATEGIES,
 )
-from load_balancer.routing import Backend
-from load_balancer.validation import (
+from load_balancer.infrastructure.validation import (
     non_negative_integer_argument,
     port_argument,
     positive_float_argument,
     positive_integer_argument,
+)
+
+DEFAULT_BACKENDS = tuple(
+    Backend(name, url) for name, url in DEFAULT_BACKEND_DEFINITIONS
 )
 
 
@@ -54,8 +58,6 @@ class Settings:
 
 
 def backend_argument(value: str) -> Backend:
-    """Parse one backend written as NAME=http://HOST:PORT."""
-
     name, separator, url = value.partition("=")
     target = urlsplit(url)
     if (
@@ -74,22 +76,16 @@ def backend_argument(value: str) -> Backend:
 
 
 def health_path_argument(value: str) -> str:
-    """Parse an absolute HTTP path used for backend probes."""
-
     if not value.startswith("/") or value.startswith("//"):
         raise argparse.ArgumentTypeError("health path must start with one /")
     return value
 
 
 def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
-    """Parse command-line arguments into validated settings."""
-
     parser = argparse.ArgumentParser(description="Run the learning load balancer")
     parser.add_argument("--listen-host", default=DEFAULT_LISTEN_HOST)
     parser.add_argument(
-        "--listen-port",
-        type=port_argument,
-        default=DEFAULT_LISTEN_PORT,
+        "--listen-port", type=port_argument, default=DEFAULT_LISTEN_PORT
     )
     parser.add_argument(
         "--strategy",
@@ -166,7 +162,6 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
     names = [backend.name for backend in backends]
     if len(names) != len(set(names)):
         parser.error("backend names must be unique")
-
     return Settings(
         listen_host=parsed.listen_host,
         listen_port=parsed.listen_port,

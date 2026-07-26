@@ -1,37 +1,18 @@
-"""HTTP transport for requests sent from the proxy to one backend."""
+"""Standard-library HTTP transport for selected backend requests."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse
 from urllib.parse import urlsplit
 
-from load_balancer.constants import FORWARDED_HEADERS, HOP_BY_HOP_HEADERS
-from load_balancer.routing import Backend
-
-
-class UpstreamFailure(Exception):
-    """Carry a safe operational outcome from upstream communication."""
-
-    def __init__(self, outcome: str) -> None:
-        super().__init__(outcome)
-        self.outcome = outcome
-
-
-@dataclass(frozen=True, slots=True)
-class UpstreamRequest:
-    """Transport-neutral request data required by the upstream adapter."""
-
-    method: str
-    path: str
-    body: bytes | None
-    headers: tuple[tuple[str, str], ...]
-    client_ip: str
-    original_host: str | None
-    request_id: str
-
+from load_balancer.domain.models import Backend
+from load_balancer.infrastructure.defaults import (
+    FORWARDED_HEADERS,
+    HOP_BY_HOP_HEADERS,
+)
+from load_balancer.ports.upstream import UpstreamFailure, UpstreamRequest
 
 ConnectionFactory = Callable[..., HTTPConnection]
 
@@ -56,8 +37,6 @@ class UpstreamTransport:
         backend: Backend,
         request: UpstreamRequest,
     ) -> Iterator[HTTPResponse]:
-        """Yield one upstream response and always close its connection."""
-
         target = urlsplit(backend.url)
         if target.scheme != "http" or target.hostname is None:
             raise ValueError(f"unsupported backend URL: {backend.url}")
@@ -100,8 +79,6 @@ class UpstreamTransport:
         target_host: str,
         request: UpstreamRequest,
     ) -> dict[str, str]:
-        """Create trusted upstream headers without forwarding spoofable values."""
-
         headers = {
             name: value
             for name, value in request.headers

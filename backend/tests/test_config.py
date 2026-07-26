@@ -1,7 +1,7 @@
 import pytest
 
-from load_balancer.config import DEFAULT_BACKENDS, parse_settings
-from load_balancer.routing import Backend
+from load_balancer.domain.models import Backend
+from load_balancer.infrastructure.config import DEFAULT_BACKENDS, parse_settings
 
 
 def test_uses_local_demonstration_defaults() -> None:

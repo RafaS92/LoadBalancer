@@ -1,13 +1,9 @@
 """Reusable command-line value validation."""
 
-from __future__ import annotations
-
 import argparse
 
 
 def port_argument(value: str) -> int:
-    """Parse a valid TCP port number."""
-
     try:
         port = int(value)
     except ValueError as error:
@@ -18,8 +14,6 @@ def port_argument(value: str) -> int:
 
 
 def positive_float_argument(value: str) -> float:
-    """Parse a positive number."""
-
     try:
         number = float(value)
     except ValueError as error:
@@ -30,8 +24,6 @@ def positive_float_argument(value: str) -> float:
 
 
 def positive_integer_argument(value: str) -> int:
-    """Parse a positive whole number."""
-
     try:
         number = int(value)
     except ValueError as error:
@@ -42,8 +34,6 @@ def positive_integer_argument(value: str) -> int:
 
 
 def non_negative_integer_argument(value: str) -> int:
-    """Parse a whole number that may be zero."""
-
     try:
         number = int(value)
     except ValueError as error:

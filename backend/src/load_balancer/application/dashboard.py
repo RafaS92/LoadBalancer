@@ -1,4 +1,4 @@
-"""Thread-safe read models for the operations dashboard."""
+"""Thread-safe dashboard read model and query use case."""
 
 from __future__ import annotations
 
@@ -6,9 +6,8 @@ from collections import deque
 from datetime import UTC, datetime
 from threading import Lock
 
-from load_balancer.constants import DEFAULT_RECENT_REQUEST_LIMIT
-from load_balancer.control_plane import ControlPlaneService
-from load_balancer.routing import Backend
+from load_balancer.application.administration import ControlPlaneService
+from load_balancer.domain.models import Backend
 
 
 def utc_timestamp() -> str:
@@ -20,11 +19,7 @@ def utc_timestamp() -> str:
 class DashboardReadModel:
     """Maintain bounded operational aggregates for browser consumption."""
 
-    def __init__(
-        self,
-        *,
-        recent_request_limit: int = DEFAULT_RECENT_REQUEST_LIMIT,
-    ) -> None:
+    def __init__(self, *, recent_request_limit: int = 30) -> None:
         if recent_request_limit <= 0:
             raise ValueError("recent request limit must be positive")
         self._lock = Lock()
@@ -48,8 +43,6 @@ class DashboardReadModel:
         duration_seconds: float,
         request_id: str,
     ) -> None:
-        """Add one completed request to dashboard aggregates."""
-
         duration_ms = duration_seconds * 1000
         failed = status >= 400
         backend_name = backend.name if backend is not None else None
@@ -78,15 +71,11 @@ class DashboardReadModel:
             )
 
     def record_retry(self, backend: Backend) -> None:
-        """Add one retry to process and backend aggregates."""
-
         with self._lock:
             self._retries_total += 1
             self._stats_for(backend.name)["retries_total"] += 1
 
     def snapshot(self) -> dict[str, object]:
-        """Return a detached, JSON-ready view of current traffic data."""
-
         with self._lock:
             average_latency_ms = (
                 self._duration_total_ms / self._requests_total
@@ -148,8 +137,6 @@ class DashboardService:
         self._traffic = traffic
 
     def snapshot(self) -> dict[str, object]:
-        """Return the complete frontend-facing dashboard document."""
-
         backends = self._control_plane.list_backends()
         traffic = self._traffic.snapshot()
         backend_stats = traffic["backend_stats"]

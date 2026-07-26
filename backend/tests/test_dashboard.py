@@ -1,6 +1,10 @@
-from load_balancer.control_plane import ControlPlaneService
-from load_balancer.dashboard import DashboardReadModel, DashboardService
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.application.administration import ControlPlaneService
+from load_balancer.application.dashboard import (
+    DashboardReadModel,
+    DashboardService,
+)
+from load_balancer.domain.models import Backend
+from load_balancer.domain.routing import RoundRobinPool
 
 
 def test_combines_backend_state_and_traffic_aggregates() -> None:

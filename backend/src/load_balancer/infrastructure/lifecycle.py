@@ -9,8 +9,6 @@ from typing import Protocol
 
 
 class ManagedServer(Protocol):
-    """Server operations required by the process lifecycle."""
-
     def serve_forever(self) -> None: ...
 
     def shutdown(self) -> None: ...
@@ -19,8 +17,6 @@ class ManagedServer(Protocol):
 
 
 class BackgroundService(Protocol):
-    """Start/stop lifecycle shared by health checks and future workers."""
-
     def start(self) -> None: ...
 
     def stop(self) -> None: ...
@@ -34,8 +30,6 @@ def run_until_shutdown(
     install_signal_handlers: bool = True,
     thread_name: str = "http-server",
 ) -> None:
-    """Run a server until interrupted, then close all resources in order."""
-
     requested = shutdown_event or Event()
     previous_handlers: dict[signal.Signals, signal.Handlers] = {}
 
@@ -46,8 +40,7 @@ def run_until_shutdown(
     if install_signal_handlers:
         for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[shutdown_signal] = signal.signal(
-                shutdown_signal,
-                request_shutdown,
+                shutdown_signal, request_shutdown
             )
 
     server_errors: list[BaseException] = []

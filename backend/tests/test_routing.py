@@ -2,7 +2,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from load_balancer.routing import Backend, LeastConnectionsPool, RoundRobinPool
+from load_balancer.domain.models import Backend
+from load_balancer.domain.routing import (
+    LeastConnectionsPool,
+    RoundRobinPool,
+)
 
 
 @pytest.fixture

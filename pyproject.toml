@@ -19,8 +19,8 @@ dev = [
 ]
 
 [project.scripts]
-load-balancer = "load_balancer.cli:main"
-demo-backend = "load_balancer.demo_backend:main"
+load-balancer = "load_balancer.adapters.inbound.cli:main"
+demo-backend = "load_balancer.adapters.inbound.http.demo:main"
 
 [tool.setuptools]
 package-dir = {"" = "backend/src"}

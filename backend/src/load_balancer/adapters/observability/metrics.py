@@ -1,4 +1,4 @@
-"""Prometheus metrics for the load balancer."""
+"""Prometheus implementation of the operational event boundary."""
 
 from prometheus_client import (
     CollectorRegistry,
@@ -8,9 +8,16 @@ from prometheus_client import (
     generate_latest,
 )
 
+from load_balancer.ports.events import (
+    HealthChanged,
+    OperationalEvent,
+    RequestCompleted,
+    RetryAttempted,
+)
+
 
 class LoadBalancerMetrics:
-    """Own and update metrics exported by one load-balancer process."""
+    """Own metrics exported by one load-balancer process."""
 
     def __init__(self) -> None:
         self._registry = CollectorRegistry()
@@ -45,6 +52,29 @@ class LoadBalancerMetrics:
             registry=self._registry,
         )
 
+    def publish(self, event: OperationalEvent) -> None:
+        if isinstance(event, RequestCompleted):
+            self.record(
+                method=event.method,
+                status=event.status,
+                outcome=event.outcome,
+                backend=(
+                    event.backend.name if event.backend is not None else None
+                ),
+                duration_seconds=event.duration_seconds,
+            )
+        elif isinstance(event, RetryAttempted):
+            self.record_retry(
+                event.method,
+                event.reason,
+                event.failed_backend.name,
+            )
+        elif isinstance(event, HealthChanged):
+            self.record_health_transition(
+                event.backend_name,
+                healthy=event.healthy,
+            )
+
     def record(
         self,
         *,
@@ -54,8 +84,6 @@ class LoadBalancerMetrics:
         backend: str | None,
         duration_seconds: float,
     ) -> None:
-        """Record one completed proxy request."""
-
         backend_label = backend or "none"
         self._requests.labels(
             method=method,
@@ -70,20 +98,14 @@ class LoadBalancerMetrics:
         ).observe(duration_seconds)
 
     def set_backend_health(self, backend: str, *, healthy: bool) -> None:
-        """Set the current-health gauge without recording a transition."""
-
         self._backend_healthy.labels(backend=backend).set(1 if healthy else 0)
 
     def record_health_transition(self, backend: str, *, healthy: bool) -> None:
-        """Update current health and count one state transition."""
-
         state = "healthy" if healthy else "unhealthy"
         self.set_backend_health(backend, healthy=healthy)
         self._health_transitions.labels(backend=backend, state=state).inc()
 
     def record_retry(self, method: str, reason: str, failed_backend: str) -> None:
-        """Count one real additional attempt after a safe failure."""
-
         self._retries.labels(
             method=method,
             reason=reason,
@@ -91,6 +113,4 @@ class LoadBalancerMetrics:
         ).inc()
 
     def render(self) -> bytes:
-        """Render this server's registry in Prometheus text format."""
-
         return generate_latest(self._registry)

@@ -1,36 +1,15 @@
-"""Bounded backend response delivery independent of request routing."""
+"""Bounded backend response delivery."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from http.client import HTTPException, HTTPResponse
-from typing import Protocol
+from http.client import HTTPException
 
-from load_balancer.constants import HOP_BY_HOP_HEADERS, RESPONSE_CHUNK_SIZE
-from load_balancer.upstream import UpstreamFailure
-
-
-class DownstreamResponseWriter(Protocol):
-    """Operations the response policy needs from an HTTP adapter."""
-
-    def _send_upstream_headers(
-        self,
-        status: int,
-        reason: str,
-        headers: list[tuple[str, str]],
-        content_length: int,
-        request_id: str,
-    ) -> bool: ...
-
-    def _write_response_body(self, body: bytes) -> bool: ...
-
-
-@dataclass(frozen=True, slots=True)
-class DeliveryResult:
-    """Result of delivering one upstream response downstream."""
-
-    status: int
-    outcome: str | None = None
+from load_balancer.infrastructure.defaults import (
+    HOP_BY_HOP_HEADERS,
+    RESPONSE_CHUNK_SIZE,
+)
+from load_balancer.ports.downstream import DeliveryResult, DownstreamWriter
+from load_balancer.ports.upstream import UpstreamFailure, UpstreamResponse
 
 
 class ResponseRelay:
@@ -43,12 +22,10 @@ class ResponseRelay:
 
     def relay(
         self,
-        response: HTTPResponse,
+        response: UpstreamResponse,
         request_id: str,
-        downstream: DownstreamResponseWriter,
+        downstream: DownstreamWriter,
     ) -> DeliveryResult:
-        """Deliver a bounded response and classify mid-stream failures."""
-
         status = response.status
         reason = response.reason
         headers = response.getheaders()
@@ -62,7 +39,7 @@ class ResponseRelay:
 
         if content_length is None:
             response_body = self._read_unframed(response)
-            if not downstream._send_upstream_headers(
+            if not downstream.send_upstream_headers(
                 status,
                 reason,
                 headers,
@@ -70,13 +47,13 @@ class ResponseRelay:
                 request_id,
             ):
                 return DeliveryResult(status, "client_disconnected")
-            if not downstream._write_response_body(response_body):
+            if not downstream.write_body(response_body):
                 return DeliveryResult(status, "client_disconnected")
             return DeliveryResult(status)
 
         if content_length > self._max_body_bytes:
             raise UpstreamFailure("backend_response_too_large")
-        if not downstream._send_upstream_headers(
+        if not downstream.send_upstream_headers(
             status,
             reason,
             headers,
@@ -95,14 +72,12 @@ class ResponseRelay:
                 return DeliveryResult(status, "backend_response_failed")
             if not chunk:
                 return DeliveryResult(status, "backend_response_failed")
-            if not downstream._write_response_body(chunk):
+            if not downstream.write_body(chunk):
                 return DeliveryResult(status, "client_disconnected")
             remaining -= len(chunk)
         return DeliveryResult(status)
 
-    def _read_unframed(self, response: HTTPResponse) -> bytes:
-        """Buffer an unframed response within the configured safety limit."""
-
+    def _read_unframed(self, response: UpstreamResponse) -> bytes:
         try:
             body = response.read(self._max_body_bytes + 1)
         except TimeoutError as error:
@@ -115,8 +90,6 @@ class ResponseRelay:
 
 
 def response_content_length(headers: list[tuple[str, str]]) -> int | None:
-    """Return one valid backend Content-Length or reject ambiguous framing."""
-
     values = [
         value for name, value in headers if name.lower() == "content-length"
     ]
@@ -136,8 +109,6 @@ def response_content_length(headers: list[tuple[str, str]]) -> int | None:
 def forwarded_response_headers(
     headers: list[tuple[str, str]],
 ) -> tuple[tuple[str, str], ...]:
-    """Filter headers that cannot be forwarded across a proxy boundary."""
-
     return tuple(
         (name, value)
         for name, value in headers

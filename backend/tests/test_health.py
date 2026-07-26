@@ -5,9 +5,10 @@ from threading import Event, Lock
 import httpx
 import pytest
 
-from load_balancer.health import HealthChecker
-from load_balancer.metrics import LoadBalancerMetrics
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.adapters.observability.metrics import LoadBalancerMetrics
+from load_balancer.domain.models import Backend
+from load_balancer.domain.routing import RoundRobinPool
+from load_balancer.infrastructure.health_checker import HealthChecker
 
 BACKEND = Backend("backend-a", "http://backend-a:9001")
 

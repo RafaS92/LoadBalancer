@@ -8,13 +8,14 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from load_balancer.demo_backend import (
+from load_balancer.adapters.inbound.http.demo import (
     DEFAULT_MAX_BODY_BYTES,
     create_demo_backend_server,
     parse_demo_settings,
 )
-from load_balancer.proxy import create_proxy_server
-from load_balancer.routing import Backend, RoundRobinPool
+from load_balancer.adapters.inbound.http.factory import create_proxy_server
+from load_balancer.domain.models import Backend
+from load_balancer.domain.routing import RoundRobinPool
 
 
 @contextmanager

@@ -12,9 +12,11 @@ from uuid import UUID
 
 import pytest
 
-import load_balancer.proxy as proxy_module
-from load_balancer.proxy import ProxyRequestHandler, create_proxy_server
-from load_balancer.routing import Backend, RoundRobinPool
+import load_balancer.adapters.inbound.http.factory as proxy_module
+from load_balancer.adapters.inbound.http.factory import create_proxy_server
+from load_balancer.adapters.inbound.http.handler import ProxyRequestHandler
+from load_balancer.domain.models import Backend
+from load_balancer.domain.routing import RoundRobinPool
 
 
 @contextmanager
@@ -567,7 +569,7 @@ def test_connect_timeout_is_classified_in_logs_and_metrics(
             pass
 
     monkeypatch.setattr(
-        "load_balancer.proxy.HTTPConnection",
+        "load_balancer.adapters.inbound.http.factory.HTTPConnection",
         TimedOutConnection,
     )
     pool = RoundRobinPool([Backend("backend-a", "http://backend-a:9001")])
