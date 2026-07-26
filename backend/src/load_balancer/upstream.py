@@ -8,23 +8,8 @@ from dataclasses import dataclass
 from http.client import HTTPConnection, HTTPException, HTTPResponse
 from urllib.parse import urlsplit
 
+from load_balancer.constants import FORWARDED_HEADERS, HOP_BY_HOP_HEADERS
 from load_balancer.routing import Backend
-
-HOP_BY_HOP_HEADERS = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-}
-FORWARDED_HEADERS = {
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-}
 
 
 class UpstreamFailure(Exception):

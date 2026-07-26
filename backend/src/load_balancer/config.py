@@ -7,18 +7,29 @@ from dataclasses import dataclass
 from typing import Sequence
 from urllib.parse import urlsplit
 
+from load_balancer.constants import (
+    DEFAULT_BACKENDS,
+    DEFAULT_HEALTH_FAILURE_THRESHOLD,
+    DEFAULT_HEALTH_INTERVAL,
+    DEFAULT_HEALTH_PATH,
+    DEFAULT_HEALTH_SUCCESS_THRESHOLD,
+    DEFAULT_HEALTH_TIMEOUT,
+    DEFAULT_LISTEN_HOST,
+    DEFAULT_LISTEN_PORT,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_MAX_RESPONSE_BODY_BYTES,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_ROUTING_STRATEGY,
+    DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    DEFAULT_UPSTREAM_RESPONSE_TIMEOUT,
+    ROUTING_STRATEGIES,
+)
 from load_balancer.routing import Backend
 from load_balancer.validation import (
     non_negative_integer_argument,
     port_argument,
     positive_float_argument,
     positive_integer_argument,
-)
-
-DEFAULT_BACKENDS = (
-    Backend("backend-a", "http://127.0.0.1:9001"),
-    Backend("backend-b", "http://127.0.0.1:9002"),
-    Backend("backend-c", "http://127.0.0.1:9003"),
 )
 
 
@@ -74,66 +85,74 @@ def parse_settings(arguments: Sequence[str] | None = None) -> Settings:
     """Parse command-line arguments into validated settings."""
 
     parser = argparse.ArgumentParser(description="Run the learning load balancer")
-    parser.add_argument("--listen-host", default="127.0.0.1")
-    parser.add_argument("--listen-port", type=port_argument, default=8080)
+    parser.add_argument("--listen-host", default=DEFAULT_LISTEN_HOST)
+    parser.add_argument(
+        "--listen-port",
+        type=port_argument,
+        default=DEFAULT_LISTEN_PORT,
+    )
     parser.add_argument(
         "--strategy",
-        choices=("round-robin", "least-connections"),
-        default="round-robin",
+        choices=ROUTING_STRATEGIES,
+        default=DEFAULT_ROUTING_STRATEGY,
     )
     parser.add_argument(
         "--upstream-connect-timeout",
         type=positive_float_argument,
-        default=2.0,
+        default=DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
         help="maximum seconds to establish a backend connection",
     )
     parser.add_argument(
         "--upstream-response-timeout",
         type=positive_float_argument,
-        default=2.0,
+        default=DEFAULT_UPSTREAM_RESPONSE_TIMEOUT,
         help="maximum seconds to wait on a connected backend",
     )
     parser.add_argument(
         "--max-retries",
         type=non_negative_integer_argument,
-        default=1,
+        default=DEFAULT_MAX_RETRIES,
         help="additional connection attempts allowed for safe requests",
     )
     parser.add_argument(
         "--max-request-body-bytes",
         type=positive_integer_argument,
-        default=1_048_576,
+        default=DEFAULT_MAX_REQUEST_BODY_BYTES,
         help="maximum accepted request body size in bytes",
     )
     parser.add_argument(
         "--max-response-body-bytes",
         type=positive_integer_argument,
-        default=1_048_576,
+        default=DEFAULT_MAX_RESPONSE_BODY_BYTES,
         help="maximum backend response body size in bytes",
     )
-    parser.add_argument("--health-path", type=health_path_argument, default="/health")
+    parser.add_argument(
+        "--health-path",
+        type=health_path_argument,
+        default=DEFAULT_HEALTH_PATH,
+    )
     parser.add_argument(
         "--health-interval",
         type=positive_float_argument,
-        default=2.0,
+        default=DEFAULT_HEALTH_INTERVAL,
         help="seconds between health-check cycles",
     )
     parser.add_argument(
         "--health-timeout",
         type=positive_float_argument,
-        default=0.5,
+        default=DEFAULT_HEALTH_TIMEOUT,
         help="maximum seconds for one health probe",
     )
     parser.add_argument(
         "--health-failure-threshold",
         type=positive_integer_argument,
-        default=2,
+        default=DEFAULT_HEALTH_FAILURE_THRESHOLD,
         help="consecutive failures required to mark a backend unhealthy",
     )
     parser.add_argument(
         "--health-success-threshold",
         type=positive_integer_argument,
-        default=2,
+        default=DEFAULT_HEALTH_SUCCESS_THRESHOLD,
         help="consecutive successes required to restore a backend",
     )
     parser.add_argument(

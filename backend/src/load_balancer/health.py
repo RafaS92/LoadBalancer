@@ -9,6 +9,13 @@ from threading import Event, Thread
 
 import httpx
 
+from load_balancer.constants import (
+    DEFAULT_HEALTH_FAILURE_THRESHOLD,
+    DEFAULT_HEALTH_INTERVAL,
+    DEFAULT_HEALTH_PATH,
+    DEFAULT_HEALTH_SUCCESS_THRESHOLD,
+    DEFAULT_HEALTH_TIMEOUT,
+)
 from load_balancer.metrics import LoadBalancerMetrics
 from load_balancer.routing import Backend, BackendPool
 
@@ -22,11 +29,11 @@ class HealthChecker:
         self,
         pool: BackendPool,
         *,
-        path: str = "/health",
-        interval: float = 2.0,
-        timeout: float = 0.5,
-        failure_threshold: int = 2,
-        success_threshold: int = 2,
+        path: str = DEFAULT_HEALTH_PATH,
+        interval: float = DEFAULT_HEALTH_INTERVAL,
+        timeout: float = DEFAULT_HEALTH_TIMEOUT,
+        failure_threshold: int = DEFAULT_HEALTH_FAILURE_THRESHOLD,
+        success_threshold: int = DEFAULT_HEALTH_SUCCESS_THRESHOLD,
         metrics: LoadBalancerMetrics | None = None,
         client: httpx.Client | None = None,
     ) -> None:

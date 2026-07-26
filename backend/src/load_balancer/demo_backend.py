@@ -10,11 +10,16 @@ from http.server import BaseHTTPRequestHandler
 from typing import Sequence
 from urllib.parse import urlsplit
 
+from load_balancer.constants import (
+    DEFAULT_DEMO_BACKEND_HOST,
+    DEFAULT_DEMO_BACKEND_NAME,
+    DEFAULT_DEMO_BACKEND_PORT,
+    DEFAULT_HEALTH_PATH,
+    DEFAULT_MAX_BODY_BYTES,
+)
 from load_balancer.lifecycle import run_until_shutdown
 from load_balancer.server import GracefulThreadingHTTPServer
 from load_balancer.validation import port_argument, positive_integer_argument
-
-DEFAULT_MAX_BODY_BYTES = 1_048_576
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,16 +50,19 @@ def parse_demo_settings(
     parser.add_argument(
         "--name",
         type=non_empty_name,
-        default=os.environ.get("BACKEND_NAME", "backend-a"),
+        default=os.environ.get("BACKEND_NAME", DEFAULT_DEMO_BACKEND_NAME),
     )
     parser.add_argument(
         "--host",
-        default=os.environ.get("BACKEND_HOST", "127.0.0.1"),
+        default=os.environ.get("BACKEND_HOST", DEFAULT_DEMO_BACKEND_HOST),
     )
     parser.add_argument(
         "--port",
         type=port_argument,
-        default=os.environ.get("BACKEND_PORT", "9001"),
+        default=os.environ.get(
+            "BACKEND_PORT",
+            str(DEFAULT_DEMO_BACKEND_PORT),
+        ),
     )
     parser.add_argument(
         "--max-body-bytes",
@@ -87,7 +95,7 @@ class DemoBackendHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Return health or request identity."""
 
-        if urlsplit(self.path).path == "/health":
+        if urlsplit(self.path).path == DEFAULT_HEALTH_PATH:
             self._send_json(
                 200,
                 {

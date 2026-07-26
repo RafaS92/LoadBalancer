@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from http.client import HTTPException, HTTPResponse
 from typing import Protocol
 
-from load_balancer.upstream import HOP_BY_HOP_HEADERS, UpstreamFailure
-
-RESPONSE_CHUNK_SIZE = 64 * 1024
+from load_balancer.constants import HOP_BY_HOP_HEADERS, RESPONSE_CHUNK_SIZE
+from load_balancer.upstream import UpstreamFailure
 
 
 class DownstreamResponseWriter(Protocol):

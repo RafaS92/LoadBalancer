@@ -6,6 +6,7 @@ from collections import deque
 from datetime import UTC, datetime
 from threading import Lock
 
+from load_balancer.constants import DEFAULT_RECENT_REQUEST_LIMIT
 from load_balancer.control_plane import ControlPlaneService
 from load_balancer.routing import Backend
 
@@ -19,7 +20,11 @@ def utc_timestamp() -> str:
 class DashboardReadModel:
     """Maintain bounded operational aggregates for browser consumption."""
 
-    def __init__(self, *, recent_request_limit: int = 30) -> None:
+    def __init__(
+        self,
+        *,
+        recent_request_limit: int = DEFAULT_RECENT_REQUEST_LIMIT,
+    ) -> None:
         if recent_request_limit <= 0:
             raise ValueError("recent request limit must be positive")
         self._lock = Lock()

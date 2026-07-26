@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler
 from time import perf_counter
@@ -12,6 +11,19 @@ from uuid import uuid4
 
 from prometheus_client import CONTENT_TYPE_LATEST
 
+from load_balancer.constants import (
+    ADMIN_BACKENDS_PATH,
+    DASHBOARD_PATH,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_MAX_RESPONSE_BODY_BYTES,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    DEFAULT_UPSTREAM_RESPONSE_TIMEOUT,
+    METRICS_PATH,
+    REQUEST_ID_PATTERN,
+    RETRYABLE_METHODS,
+    RETRYABLE_OUTCOMES,
+)
 from load_balancer.control_plane import ControlPlaneService
 from load_balancer.dashboard import DashboardReadModel, DashboardService
 from load_balancer.http_framing import (
@@ -29,13 +41,6 @@ from load_balancer.upstream import (
     UpstreamTransport,
 )
 
-ADMIN_BACKENDS_PATH = "/admin/backends"
-METRICS_PATH = "/metrics"
-DASHBOARD_PATH = "/api/v1/dashboard"
-RETRYABLE_METHODS = {"GET"}
-RETRYABLE_OUTCOMES = {"backend_connect_timeout", "backend_connection_failed"}
-REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
-
 
 class ProxyHTTPServer(GracefulThreadingHTTPServer):
     """Threaded HTTP server that waits for active requests during close."""
@@ -52,8 +57,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
     upstream_transport: UpstreamTransport
     response_relay: ResponseRelay
     dashboard: DashboardService
-    max_retries = 1
-    max_request_body_bytes = 1_048_576
+    max_retries = DEFAULT_MAX_RETRIES
+    max_request_body_bytes = DEFAULT_MAX_REQUEST_BODY_BYTES
 
     def do_GET(self) -> None:
         """Forward one GET request or return a controlled gateway error."""
@@ -486,11 +491,11 @@ def create_proxy_server(
     address: tuple[str, int],
     pool: BackendPool,
     *,
-    upstream_connect_timeout: float = 2.0,
-    upstream_response_timeout: float = 2.0,
-    max_retries: int = 1,
-    max_request_body_bytes: int = 1_048_576,
-    max_response_body_bytes: int = 1_048_576,
+    upstream_connect_timeout: float = DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    upstream_response_timeout: float = DEFAULT_UPSTREAM_RESPONSE_TIMEOUT,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    max_request_body_bytes: int = DEFAULT_MAX_REQUEST_BODY_BYTES,
+    max_response_body_bytes: int = DEFAULT_MAX_RESPONSE_BODY_BYTES,
     metrics: LoadBalancerMetrics | None = None,
     control_plane: ControlPlaneService | None = None,
     observer: ProxyObserver | None = None,
