@@ -35,7 +35,9 @@ This provides three important benefits:
 
 This project is deliberately small enough to teach those ideas. It is not
 trying to replace production tools such as Nginx, HAProxy, Envoy, or a cloud
-load balancer.
+load balancer. Envoy is an open-source proxy commonly used in cloud and
+microservice systems for routing, load balancing, health checks, retries, and
+traffic observability.
 
 ## 2. Proxy and reverse proxy
 
@@ -78,7 +80,9 @@ The project actually contains two reverse-proxy boundaries:
 - The Python load balancer proxies application traffic to one of the demo
   backends.
 - The production frontend's Nginx server proxies `/api/` dashboard requests to
-  the Python load balancer.
+  the Python load balancer. Nginx is a web server and reverse proxy; here it
+  serves the compiled React frontend and forwards its API requests to the
+  load balancer.
 
 The Python reverse-proxy implementation is spread across these focused files:
 
@@ -211,7 +215,8 @@ the CLI `--strategy` option.
 
 The HTTP server is threaded, so multiple client requests may try to choose a
 backend at the same time. Health checks and administration actions can also
-change backend state while requests are arriving.
+change backend state while requests are arriving. **Threaded** means the server
+can handle multiple requests concurrently in separate execution threads.
 
 A lock is like a manager controlling access to a shared whiteboard. Only one
 thread can read and update the routing state at a time.
@@ -388,47 +393,6 @@ The retry behavior is tested without sockets in
 - `test_does_not_retry_mutating_request`
 
 It is also covered end to end in `backend/tests/test_proxy.py`.
-
-## 9. Idempotency
-
-An operation is idempotent when performing the same operation more than once
-has the same intended effect as performing it once.
-
-Examples:
-
-- Reading a resource with `GET` is normally idempotent.
-- Setting a user's name to `"Ana"` can be idempotent.
-- “Charge this credit card $20” is usually not idempotent.
-
-Idempotency matters because the load balancer cannot always know whether a
-backend received or processed a request before the connection failed. Retrying
-a non-idempotent request may duplicate a payment, order, message, or database
-write.
-
-This project uses a conservative approximation: only `GET` is configured as
-retryable, and only for connection failures that happen before an HTTP exchange
-is established. Although HTTP defines other methods such as `DELETE` as
-idempotent in protocol semantics, this implementation intentionally retries only
-`GET`.
-
-An `X-Request-Id` is also carried through the project, but a request ID is **not
-an idempotency key**:
-
-- A request ID helps logs and systems correlate one request and its retry.
-- An idempotency key must be stored and enforced by the application so repeated
-  operations return the original result instead of repeating the side effect.
-
-This project does not implement a persistent idempotency-key store. If
-non-idempotent retries were added later, the backend application would need an
-idempotency contract and durable storage.
-
-Relevant code:
-
-- `infrastructure/defaults.py` defines `RETRYABLE_METHODS` and
-  `RETRYABLE_OUTCOMES`.
-- `application/proxying.py` makes the retry decision.
-- `adapters/inbound/http/handler.py` validates or generates `X-Request-Id`.
-- `adapters/outbound/http/upstream.py` sends that same ID to the backend.
 
 ## 10. Logs added to the project
 
@@ -631,6 +595,10 @@ The main areas are:
 The reason for this separation is not just organization. The routing and retry
 decisions can be tested with in-memory fakes, without Docker or real sockets.
 Technical libraries can change without moving the core rules.
+
+A **response relay** safely transfers a selected backend's HTTP response to the
+original client while preserving its status and safe headers, enforcing body
+limits, and detecting timeouts, incomplete responses, or disconnections.
 
 The architecture dependency rule is automatically checked by:
 
