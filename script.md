@@ -55,27 +55,11 @@ Then open Docker Desktop and expand the `load-balancer` Compose application.
 
 ### Say
 
-> Docker is especially useful here because a load balancer only makes sense when several independent services are running. Compose gives us five reproducible containers: one frontend, one load balancer, and three backends.
+> Docker is especially useful here because a load balancer only makes sense when several independent services are running. Compose gives us five containers: one frontend, one load balancer, and three backends.
 
-> Isolation also makes failure testing realistic. I can stop one backend without stopping the load balancer or the other backends. Reproducing that setup manually would require several terminals, ports, dependencies, and process lifecycle commands.
+> Isolation also makes failure testing realistic. I can stop one backend without stopping the load balancer or the other backends. 
 
 > The main tools are Python for the reverse proxy and demo servers, React and TypeScript for the dashboard, Nginx to serve the production frontend and proxy its API calls, Prometheus's client library for metrics, Docker Compose for orchestration, and Postman for sending and inspecting HTTP requests.
-
-### Quick `compose.yaml` reference
-
-Open `compose.yaml` and point out:
-
-- **Lines 3–29 — reusable backend configuration:** defines the Python image, internal port `9000`, private network, security settings, and Docker health check shared by all demo backends.
-- **Lines 31–63 — three backend containers:** starts `backend-a`, `backend-b`, and `backend-c` from the same image but gives each one a different name.
-- **Lines 65–106 — load-balancer container:** starts the Python proxy on port `8080`, supplies the three backend addresses, and waits until all backends are healthy before starting.
-- **Lines 108–133 — frontend container:** builds the React/Nginx image, waits for the load balancer, and publishes the dashboard on host port `3000`.
-- **Lines 135–137 — private network:** places all five containers on `load-balancer-network`, allowing them to communicate using service names such as `backend-a` and `load-balancer`.
-
-### Say while showing `compose.yaml`
-
-> This Compose file describes the complete environment. It creates three identical backend containers, the Python load balancer, and the React frontend. All five services share a private Docker network, so the load balancer can reach a backend using a name such as `backend-a:9000` instead of a fixed IP address.
-
-> The `depends_on` health conditions control startup order: the backends must be ready before the load balancer starts, and the load balancer must be ready before the frontend starts. Only ports 8080 and 3000 are published to my computer. The backend port remains internal, so normal client traffic must pass through the load balancer.
 
 
 ## 3. Demonstrate round robin — 2 minutes
@@ -120,12 +104,8 @@ After it becomes healthy again, send **Proxied request** six more times in Postm
 
 > The client address never changed. After two failed probes, backend A was removed from the eligible set, so traffic continued through B and C. After two successful probes, it rejoined the rotation automatically.
 
-> We do not change a backend's health after only one check. A single failure could be caused by a temporary network delay, so the load balancer requires two failures in a row before removing the backend. It also requires two successful checks before adding it back. This prevents the backend from repeatedly entering and leaving the rotation because of short, temporary problems. That repeated switching is called health-state flapping.
+> We do not change a backend's health after only one check. A single failure could be caused by a temporary network delay, so the load balancer requires two failures in a row before removing the backend. It also requires two successful checks before adding it back. This prevents the backend from repeatedly entering and leaving the rotation because of short, temporary problems.
 
-
-Say:
-
-> Healthy means the automatic probe can reach the backend. Enabled means an operator permits it to receive traffic. A successful health check never overrides an operator's disable decision.
 
 ## 5. Demonstrate logs, metrics, and the dashboard — 2 minutes
 
