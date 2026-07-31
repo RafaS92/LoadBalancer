@@ -103,11 +103,6 @@ class DemoBackendHandler(BaseHTTPRequestHandler):
         if body is not None:
             self._send_identity("POST", body)
 
-    def do_DELETE(self) -> None:
-        body = self._read_body()
-        if body is not None:
-            self._send_identity("DELETE", body)
-
     def _read_body(self) -> bytes | None:
         raw_length = self.headers.get("Content-Length", "0")
         try:

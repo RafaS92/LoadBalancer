@@ -125,7 +125,7 @@ sequenceDiagram
 
 Here is what each step means:
 
-1. `ProxyRequestHandler` accepts `GET`, `POST`, or `DELETE`.
+1. `ProxyRequestHandler` accepts `GET` or `POST`.
 2. The handler validates HTTP framing and body limits before selecting a
    backend. Invalid or ambiguous requests are rejected early.
 3. The handler preserves a valid `X-Request-Id` or generates a new one.
@@ -378,7 +378,6 @@ The failed backend is placed in `attempted_backends`, and the next
 The project does **not** retry:
 
 - `POST`;
-- `DELETE`;
 - response timeouts;
 - failures after the backend may have started processing the request; or
 - oversized/invalid backend responses.
@@ -685,7 +684,6 @@ secrets management, and multiple load-balancer instances.
 | --- | --- |
 | `GET /any-application-path` | Proxy a request to a selected backend |
 | `POST /any-application-path` | Proxy a bounded body without retries |
-| `DELETE /any-application-path` | Proxy a bounded body without retries |
 | `GET /admin/backends` | Read backend health and operator state |
 | `POST /admin/backends/{name}/disable` | Stop new work going to one backend |
 | `POST /admin/backends/{name}/enable` | Allow an eligible backend to receive work |

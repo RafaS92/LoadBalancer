@@ -170,8 +170,8 @@ The default policy allows one additional attempt only when:
 - another eligible backend is available; and
 - the retry limit has not been reached.
 
-`POST`, `DELETE`, response timeouts, and response-phase failures are not
-retried. This avoids repeating work after a backend may already have performed a
+`POST`, response timeouts, and response-phase failures are not retried. This
+avoids repeating work after a backend may already have performed a
 write. The same request ID is carried through a retry for correlation, but a
 request ID is not an idempotency key.
 
@@ -181,7 +181,6 @@ request ID is not an idempotency key.
 | --- | --- |
 | `GET /any-application-path` | Proxy a `GET` request |
 | `POST /any-application-path` | Proxy a bounded `POST` body without retries |
-| `DELETE /any-application-path` | Proxy a bounded `DELETE` body without retries |
 | `GET /admin/backends` | Read backend health, operator, drain, and active-request state |
 | `POST /admin/backends/{name}/enable` | Allow an eligible backend to receive new requests |
 | `POST /admin/backends/{name}/disable` | Stop new requests by operator decision |

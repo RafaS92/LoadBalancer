@@ -86,7 +86,7 @@ class LeastConnectionsPolicy:
 
 
 class StatefulBackendPool:
-    """Own mutable backend state and apply one routing policy atomically."""
+    """Own mutable backend state and apply one routing policy."""
 
     def __init__(
         self,

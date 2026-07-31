@@ -59,8 +59,6 @@ def backend_server(name: str) -> ThreadingHTTPServer:
             self.end_headers()
             self.wfile.write(body)
 
-        do_DELETE = do_POST
-
         def log_message(self, format: str, *args: object) -> None:
             pass
 
@@ -644,9 +642,7 @@ def test_get_retries_different_backend_after_connect_timeout(
     assert 'reason="backend_connect_timeout"' in metrics
 
 
-@pytest.mark.parametrize("method", ["POST", "DELETE"])
-def test_mutating_methods_are_not_retried_after_connect_timeout(
-    method: str,
+def test_post_is_not_retried_after_connect_timeout(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -681,7 +677,7 @@ def test_mutating_methods_are_not_retried_after_connect_timeout(
         f"{proxy_url(proxy)}/orders",
         data=b'{"item":"book"}',
         headers={"Content-Type": "application/json"},
-        method=method,
+        method="POST",
     )
 
     with (
@@ -694,7 +690,7 @@ def test_mutating_methods_are_not_retried_after_connect_timeout(
         except HTTPError as error:
             assert error.code == 502
         else:
-            raise AssertionError(f"expected {method} connection timeout to return 502")
+            raise AssertionError("expected POST connection timeout to return 502")
 
     event = json.loads(caplog.records[-1].message)
     assert event["backend"] == "backend-a"
@@ -782,36 +778,11 @@ def test_accepts_post_body_at_configured_limit() -> None:
     assert payload["body"] == "12345"
 
 
-def test_forwards_delete_body() -> None:
-    upstream = backend_server("backend-a")
-    pool = RoundRobinPool([backend_for(upstream, "backend-a")])
-    proxy = create_proxy_server(("127.0.0.1", 0), pool)
-    request = Request(
-        f"{proxy_url(proxy)}/items/42",
-        data=b'{"name":"updated"}',
-        headers={"Content-Type": "application/json"},
-        method="DELETE",
-    )
-
-    with running_server(upstream), running_server(proxy):
-        with urlopen(request) as response:
-            payload = json.load(response)
-
-    assert response.status == 201
-    assert payload == {
-        "backend": "backend-a",
-        "path": "/items/42",
-        "content_type": "application/json",
-        "body": '{"name":"updated"}',
-    }
-
-
-def test_delete_cannot_reach_internal_endpoints() -> None:
+def test_delete_is_not_supported() -> None:
     pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
     proxy = create_proxy_server(("127.0.0.1", 0), pool)
     request = Request(
-        f"{proxy_url(proxy)}/metrics",
-        data=b"",
+        f"{proxy_url(proxy)}/items/42",
         method="DELETE",
     )
 
@@ -819,28 +790,7 @@ def test_delete_cannot_reach_internal_endpoints() -> None:
         with pytest.raises(HTTPError) as raised:
             urlopen(request)
 
-    assert raised.value.code == 405
-    assert pool.snapshot()[0].active_requests == 0
-
-
-def test_request_body_limit_applies_to_delete() -> None:
-    pool = RoundRobinPool([Backend("backend-a", "http://127.0.0.1:1")])
-    proxy = create_proxy_server(
-        ("127.0.0.1", 0),
-        pool,
-        max_request_body_bytes=4,
-    )
-    request = Request(
-        f"{proxy_url(proxy)}/items/42",
-        data=b"12345",
-        method="DELETE",
-    )
-
-    with running_server(proxy):
-        with pytest.raises(HTTPError) as raised:
-            urlopen(request)
-
-    assert raised.value.code == 413
+    assert raised.value.code == 501
     assert pool.snapshot()[0].active_requests == 0
 
 

@@ -88,15 +88,6 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             return
         self._proxy_request("POST", body)
 
-    def do_DELETE(self) -> None:
-        body = self._read_request_body("DELETE")
-        if body is None:
-            return
-        if is_internal_path(self.path):
-            self.send_body(405, b"Internal endpoint is read-only\n")
-            return
-        self._proxy_request("DELETE", body)
-
     def _read_request_body(self, method: str) -> bytes | None:
         content_length = self._content_length(method, allow_body=True)
         if content_length is None:
