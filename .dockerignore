@@ -12,3 +12,15 @@ frontend/dist
 frontend/node_modules
 frontend/tests
 *.log
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+.coverage
+.coverage.*
+coverage.xml
+htmlcov
+.idea
+.vscode

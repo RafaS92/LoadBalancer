@@ -896,7 +896,7 @@ Keep these four windows ready:
 1. the browser dashboard;
 2. the Postman collection;
 3. Docker Desktop's `load-balancer` container list; and
-4. VS Code with `FLOW.MD` and
+4. VS Code with `docs/FLOW.MD` and
    `backend/src/load_balancer/domain/routing.py`.
 
 ### Part 1: introduce the stable entry point

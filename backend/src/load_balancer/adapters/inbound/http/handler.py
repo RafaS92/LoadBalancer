@@ -145,7 +145,6 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
             outcome=outcome,
             started_at=started_at,
         )
-
     def _proxy_request(self, method: str, body: bytes | None = None) -> None:
         self.proxy_service.execute(self._request(method, body), self)
 

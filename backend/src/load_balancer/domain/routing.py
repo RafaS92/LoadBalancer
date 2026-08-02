@@ -23,7 +23,6 @@ class BackendPool(Protocol):
 
     def snapshot(self) -> tuple[BackendStatus, ...]: ...
 
-
 class RoutingPolicy(Protocol):
     """Choose one eligible backend index without mutating backend state."""
 

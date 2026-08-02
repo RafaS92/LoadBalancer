@@ -7,6 +7,8 @@ Clients use one stable address. The load balancer selects an eligible backend,
 forwards the request, safely relays the response, and records the result through
 logs, Prometheus metrics, and a React dashboard.
 
+![Learning Load Balancer architecture, request lifecycle, routing, and failure isolation](assets/images/load-balancer.png)
+
 ## Highlights
 
 - Round-robin and least-connections routing.
@@ -373,7 +375,9 @@ do not expose this demonstration configuration to the public internet.
 
 ## Learning documents
 
-- [FLOW.MD](FLOW.MD) explains the request flow, routing, concurrency, health,
+- [FLOW.MD](docs/FLOW.MD) explains the request flow, routing, concurrency, health,
   retries, idempotency, observability, Docker topology, and presentation steps.
-- [CONCEPTS.md](CONCEPTS.md) is a compact glossary for reviewing the project’s
+- [CONCEPTS.md](docs/CONCEPTS.md) is a compact glossary for reviewing the project’s
   terminology.
+- [script.md](docs/script.md) contains the project demonstration and recording
+  walkthrough.

@@ -42,7 +42,6 @@ class ProxyService:
         self._max_retries = max_retries
         self._retryable_methods = retryable_methods
         self._retryable_outcomes = retryable_outcomes
-
     def execute(
         self,
         request: UpstreamRequest,

@@ -6,3 +6,27 @@ __pycache__/
 .ruff_cache/
 frontend/node_modules/
 frontend/dist/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Test, coverage, and runtime output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.log
+npm-debug.log*
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
